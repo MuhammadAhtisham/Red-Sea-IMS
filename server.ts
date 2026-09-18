@@ -2354,20 +2354,26 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    let distPath = path.join(process.cwd(), 'dist');
-    if (!fs.existsSync(path.join(distPath, 'index.html'))) {
-      distPath = __dirname;
-    }
-    if (!fs.existsSync(path.join(distPath, 'index.html'))) {
-      distPath = process.cwd();
-    }
+    // Production mode: serve built assets from dist folder
+    // When executing dist/server.cjs, __dirname is the dist directory.
+    const distPath = fs.existsSync(path.join(__dirname, 'index.html'))
+      ? __dirname
+      : path.join(process.cwd(), 'dist');
+
     app.use(express.static(distPath));
+
     app.get('*', (req, res) => {
       const indexPath = path.join(distPath, 'index.html');
       if (fs.existsSync(indexPath)) {
         res.sendFile(indexPath);
       } else {
-        res.status(404).send('index.html not found. Please run "npm run build".');
+        res.status(404).send(`
+          <div style="font-family: system-ui, sans-serif; padding: 40px; text-align: center;">
+            <h2 style="color: #e11d48;">Production Build Missing</h2>
+            <p style="color: #475569;">The production build file was not found at <code>${indexPath}</code>.</p>
+            <p style="color: #0284c7;">Please run <strong><code>npm run build</code></strong> on your server, then click <strong>Restart App</strong> in Plesk.</p>
+          </div>
+        `);
       }
     });
   }
