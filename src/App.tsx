@@ -284,6 +284,8 @@ export default function App() {
           {activeTab === 'products' && (
             <ProductMasterView
               products={products}
+              locations={locations}
+              movements={movements}
               loading={isLoading}
               onCreateProduct={handleCreateProduct}
               onRefresh={() => fetchAllData(true)}

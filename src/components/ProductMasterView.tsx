@@ -1,5 +1,4 @@
-// Enterprise Tier-1 ERP Product Master View with High-Density Grid & Sliding Right-Hand Drawer
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Search,
   Plus,
@@ -26,19 +25,34 @@ import {
   Warehouse,
   FileText,
   Sliders,
+  Download,
+  Upload,
+  Printer,
+  Table as TableIcon,
+  LayoutGrid,
+  Building2,
+  RefreshCw,
 } from 'lucide-react';
 import {
   ProductDTO,
   CreateProductInput,
-  UoMDTO,
-  UoMCategoryDTO,
+  LocationDTO,
   CategoryDTO,
-  ProductPackagingDTO,
+  StockMovementDTO,
   api,
 } from '../services/api';
+import { ProductGridTable, ProductSortField, SortDirection } from './product/ProductGridTable';
+import { ProductCardGrid } from './product/ProductCardGrid';
+import { ProductMatrixView } from './product/ProductMatrixView';
+import { ProductDetailDrawer } from './product/ProductDetailDrawer';
+import { ProductBarcodeModal } from './product/ProductBarcodeModal';
+import { ProductImportExportModal } from './product/ProductImportExportModal';
+import { ProductBatchActionBar } from './product/ProductBatchActionBar';
 
 interface ProductMasterViewProps {
   products: ProductDTO[];
+  locations?: LocationDTO[];
+  movements?: StockMovementDTO[];
   loading: boolean;
   onCreateProduct: (input: CreateProductInput) => Promise<void>;
   onRefresh?: () => void;
@@ -46,1297 +60,624 @@ interface ProductMasterViewProps {
 
 export const ProductMasterView: React.FC<ProductMasterViewProps> = ({
   products,
+  locations = [],
+  movements = [],
   loading,
   onCreateProduct,
   onRefresh,
 }) => {
-  // Filters & State
-  const [searchTerm, setSearchTerm] = useState('');
+  // View mode
+  const [viewMode, setViewMode] = useState<'TABLE' | 'CARDS' | 'MATRIX'>('TABLE');
+
+  // Search & Filtering
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
-  const [stockHealthFilter, setStockHealthFilter] = useState<'ALL' | 'CRITICAL' | 'WARNING' | 'HEALTHY'>('ALL');
-  const [packagingLevelFilter, setPackagingLevelFilter] = useState<string>('ALL');
+  const [stockStatusFilter, setStockStatusFilter] = useState<
+    'ALL' | 'CRITICAL' | 'LOW' | 'ZERO' | 'HEALTHY'
+  >('ALL');
+  const [storageFilter, setStorageFilter] = useState<string>('ALL');
 
-  // Sliding Drawer State
+  // Sorting
+  const [sortField, setSortField] = useState<ProductSortField>('sku');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+
+  // Selection
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+
+  // Categories cache
+  const [categories, setCategories] = useState<CategoryDTO[]>([]);
+
+  // Modals & Drawers
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
-  const [activeDrawerTab, setActiveDrawerTab] = useState<
-    'GENERAL' | 'PACKAGING' | 'PROCUREMENT' | 'VARIANTS' | 'STOCK'
-  >('GENERAL');
+  const [activeEditingProduct, setActiveEditingProduct] = useState<ProductDTO | null>(null);
+  const [barcodeModalOpen, setBarcodeModalOpen] = useState(false);
+  const [barcodeModalProducts, setBarcodeModalProducts] = useState<ProductDTO[]>([]);
+  const [importExportModalOpen, setImportExportModalOpen] = useState(false);
 
-  // Master UoM state
-  const [uoms, setUoms] = useState<UoMDTO[]>([]);
-  const [uomCategories, setUomCategories] = useState<UoMCategoryDTO[]>([]);
-  const [masterCategories, setMasterCategories] = useState<CategoryDTO[]>([]);
-
-  // Selected or Form Product State
-  const [activeProduct, setActiveProduct] = useState<Partial<ProductDTO>>({
-    sku: '',
-    barcode: '',
-    name: '',
-    description: '',
-    category: 'Smart Infrastructure',
-    unitCost: 100,
-    retailPrice: 250,
-    trackInventory: true,
-    reorderPoint: 30,
-    leadTimeDays: 14,
-    unitOfMeasure: 'EA',
-    baseUoMId: 'uom-ea',
-    purchaseUoMId: 'uom-cs24',
-    salesUoMId: 'uom-ea',
-    hsCode: '8517.62.0000',
-    internalReference: 'NEOM-REF-01',
-    defaultVendor: 'Red Sea Microelectronics Ltd',
-    vendorLeadTime: 14,
-    moq: 24,
-    packagings: [
-      {
-        id: 'pkg-1',
-        productId: '',
-        uomId: 'uom-ea',
-        uomCode: 'EA',
-        packageLevel: 'EACH',
-        barcode: '',
-        qty: 1,
-        maxWeight: 0.5,
-        length: 10,
-        width: 10,
-        height: 5,
-      },
-      {
-        id: 'pkg-2',
-        productId: '',
-        uomId: 'uom-inp6',
-        uomCode: 'INP6',
-        packageLevel: 'INNER_PACK',
-        barcode: '',
-        qty: 6,
-        maxWeight: 3.0,
-        length: 25,
-        width: 15,
-        height: 10,
-      },
-      {
-        id: 'pkg-3',
-        productId: '',
-        uomId: 'uom-cs24',
-        uomCode: 'CS24',
-        packageLevel: 'CASE',
-        barcode: '',
-        qty: 24,
-        maxWeight: 12.0,
-        length: 45,
-        width: 35,
-        height: 25,
-      },
-      {
-        id: 'pkg-4',
-        productId: '',
-        uomId: 'uom-pl144',
-        uomCode: 'PL144',
-        packageLevel: 'PALLET',
-        barcode: '',
-        qty: 144,
-        maxWeight: 90.0,
-        length: 120,
-        width: 100,
-        height: 140,
-      },
-    ],
-    variants: [],
-  });
-
-  const [saving, setSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-
-  // Load UoM & Packaging metadata
+  // Load categories
   useEffect(() => {
-    const fetchMeta = async () => {
+    const fetchCategories = async () => {
       try {
-        const [uData, cData, catData] = await Promise.all([
-          api.getUoms(),
-          api.getUomCategories(),
-          api.getCategories(),
-        ]);
-        setUoms(uData);
-        setUomCategories(cData);
-        setMasterCategories(catData);
-      } catch (e) {
-        console.error('Failed to load UoMs or Categories', e);
+        const data = await api.getCategories();
+        setCategories(data);
+      } catch (err) {
+        console.error('Failed to load categories', err);
       }
     };
-    fetchMeta();
+    fetchCategories();
   }, []);
 
-  // Keyboard Navigation Shortcuts (N for New Product, / for Search, Esc for Close Drawer)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) {
-        if (e.key === 'Escape') {
-          setDrawerOpen(false);
+  // Filtered & Sorted Products calculation
+  const filteredProducts = useMemo(() => {
+    let result = products.filter((p) => {
+      // Search term
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase().trim();
+        const matchesSku = p.sku.toLowerCase().includes(query);
+        const matchesName = p.name.toLowerCase().includes(query);
+        const matchesBarcode = p.barcode.toLowerCase().includes(query);
+        const matchesCategory = p.category && p.category.toLowerCase().includes(query);
+        const matchesBrand = p.brand && p.brand.toLowerCase().includes(query);
+        const matchesHs = p.hsCode && p.hsCode.toLowerCase().includes(query);
+        const matchesVendor = p.defaultVendor && p.defaultVendor.toLowerCase().includes(query);
+
+        if (
+          !matchesSku &&
+          !matchesName &&
+          !matchesBarcode &&
+          !matchesCategory &&
+          !matchesBrand &&
+          !matchesHs &&
+          !matchesVendor
+        ) {
+          return false;
         }
-        return;
       }
 
-      if (e.key === 'n' || e.key === 'N') {
-        e.preventDefault();
-        openNewProductDrawer();
-      } else if (e.key === '/') {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-      } else if (e.key === 'Escape') {
-        setDrawerOpen(false);
+      // Category filter
+      if (selectedCategory !== 'ALL' && p.category !== selectedCategory) {
+        return false;
       }
+
+      // Storage condition filter
+      if (storageFilter !== 'ALL' && p.storageCondition !== storageFilter) {
+        return false;
+      }
+
+      // Stock status filter
+      if (stockStatusFilter === 'ZERO' && p.totalStock > 0) return false;
+      if (stockStatusFilter === 'CRITICAL' && (p.totalStock === 0 || p.totalStock >= p.reorderPoint * 0.5))
+        return false;
+      if (stockStatusFilter === 'LOW' && (p.totalStock > p.reorderPoint || p.totalStock === 0))
+        return false;
+      if (stockStatusFilter === 'HEALTHY' && p.totalStock <= p.reorderPoint) return false;
+
+      return true;
+    });
+
+    // Sorting
+    result.sort((a, b) => {
+      let valA: any = a[sortField as keyof ProductDTO];
+      let valB: any = b[sortField as keyof ProductDTO];
+
+      if (sortField === 'margin') {
+        valA = a.retailPrice > 0 ? ((a.retailPrice - a.unitCost) / a.retailPrice) * 100 : 0;
+        valB = b.retailPrice > 0 ? ((b.retailPrice - b.unitCost) / b.retailPrice) * 100 : 0;
+      }
+
+      if (valA === undefined || valA === null) valA = '';
+      if (valB === undefined || valB === null) valB = '';
+
+      if (typeof valA === 'string') {
+        return sortDirection === 'asc'
+          ? valA.localeCompare(String(valB))
+          : String(valB).localeCompare(valA);
+      }
+
+      return sortDirection === 'asc' ? valA - valB : valB - valA;
+    });
+
+    return result;
+  }, [products, searchQuery, selectedCategory, storageFilter, stockStatusFilter, sortField, sortDirection]);
+
+  // Executive KPI summary calculations
+  const kpis = useMemo(() => {
+    let totalValuation = 0;
+    let totalCostValuation = 0;
+    let lowStockCount = 0;
+    let zeroStockCount = 0;
+
+    products.forEach((p) => {
+      const stock = p.totalStock || 0;
+      totalValuation += (p.retailPrice || 0) * stock;
+      totalCostValuation += (p.unitCost || 0) * stock;
+      if (stock === 0) {
+        zeroStockCount++;
+      } else if (stock <= p.reorderPoint) {
+        lowStockCount++;
+      }
+    });
+
+    const averageMargin =
+      totalValuation > 0
+        ? ((totalValuation - totalCostValuation) / totalValuation) * 100
+        : 0;
+
+    return {
+      totalProducts: products.length,
+      totalValuation,
+      totalCostValuation,
+      averageMargin,
+      lowStockCount,
+      zeroStockCount,
     };
+  }, [products]);
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  // Unique categories in catalog
+  const catalogCategories = useMemo(() => {
+    const cats = Array.from(new Set(products.map((p) => p.category).filter(Boolean)));
+    return cats.sort();
+  }, [products]);
 
-  const openNewProductDrawer = () => {
-    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
-    setActiveProduct({
-      sku: `NEOM-SKU-${randomSuffix}`,
-      barcode: `628100${randomSuffix}01`,
-      name: '',
-      description: '',
-      category: 'Smart Infrastructure',
-      unitCost: 85,
-      retailPrice: 195,
-      trackInventory: true,
-      reorderPoint: 25,
-      leadTimeDays: 14,
-      unitOfMeasure: 'EA',
-      baseUoMId: 'uom-ea',
-      purchaseUoMId: 'uom-cs24',
-      salesUoMId: 'uom-ea',
-      hsCode: '8517.62.0000',
-      internalReference: `REF-NEOM-${randomSuffix}`,
-      defaultVendor: 'Red Sea Microelectronics Ltd',
-      vendorLeadTime: 14,
-      moq: 24,
-      packagings: [
-        {
-          id: `pkg-${Date.now()}-ea`,
-          productId: '',
-          uomId: 'uom-ea',
-          uomCode: 'EA',
-          packageLevel: 'EACH',
-          barcode: `628100${randomSuffix}01`,
-          qty: 1,
-          maxWeight: 0.6,
-          length: 12,
-          width: 10,
-          height: 6,
-        },
-        {
-          id: `pkg-${Date.now()}-inp`,
-          productId: '',
-          uomId: 'uom-inp6',
-          uomCode: 'INP6',
-          packageLevel: 'INNER_PACK',
-          barcode: `628100${randomSuffix}06`,
-          qty: 6,
-          maxWeight: 3.2,
-          length: 25,
-          width: 18,
-          height: 12,
-        },
-        {
-          id: `pkg-${Date.now()}-cs`,
-          productId: '',
-          uomId: 'uom-cs24',
-          uomCode: 'CS24',
-          packageLevel: 'CASE',
-          barcode: `10628100${randomSuffix}24`,
-          qty: 24,
-          maxWeight: 13.5,
-          length: 48,
-          width: 38,
-          height: 28,
-        },
-        {
-          id: `pkg-${Date.now()}-pl`,
-          productId: '',
-          uomId: 'uom-pl144',
-          uomCode: 'PL144',
-          packageLevel: 'PALLET',
-          barcode: `00628100${randomSuffix}144`,
-          qty: 144,
-          maxWeight: 92.0,
-          length: 120,
-          width: 100,
-          height: 140,
-        },
-      ],
-      variants: [],
-    });
-    setIsEditing(false);
-    setActiveDrawerTab('GENERAL');
-    setDrawerOpen(true);
-    setSaveSuccess(null);
-  };
+  // Unique storage conditions in catalog
+  const catalogStorageConditions = useMemo(() => {
+    const storages = Array.from(
+      new Set(products.map((p) => p.storageCondition).filter(Boolean))
+    );
+    return storages.sort();
+  }, [products]);
 
-  const openInspectDrawer = (product: ProductDTO) => {
-    setActiveProduct({
-      ...product,
-      packagings: product.packagings || [],
-      variants: product.variants || [],
-    });
-    setIsEditing(true);
-    setActiveDrawerTab('GENERAL');
-    setDrawerOpen(true);
-    setSaveSuccess(null);
-  };
-
-  const handleSaveProduct = async () => {
-    if (!activeProduct.sku || !activeProduct.name || !activeProduct.barcode) {
-      alert('SKU, Barcode, and Product Name are mandatory.');
-      return;
+  // Handlers
+  const handleSortChange = (field: ProductSortField) => {
+    if (sortField === field) {
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
     }
+  };
 
-    setSaving(true);
-    setSaveSuccess(null);
+  const handleToggleSelectAll = () => {
+    if (selectedProductIds.length === filteredProducts.length) {
+      setSelectedProductIds([]);
+    } else {
+      setSelectedProductIds(filteredProducts.map((p) => p.id));
+    }
+  };
 
-    try {
-      if (isEditing && activeProduct.id) {
-        await api.patchProduct(activeProduct.id, activeProduct);
-        setSaveSuccess('Product successfully updated in NEOM Master Catalog.');
-      } else {
-        await onCreateProduct(activeProduct as CreateProductInput);
-        setSaveSuccess('New SKU registered in RedSea IMS with multi-tier packaging.');
+  const handleToggleSelect = (id: string) => {
+    setSelectedProductIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectProduct = (product: ProductDTO) => {
+    setActiveEditingProduct(product);
+    setDrawerOpen(true);
+  };
+
+  const handleOpenCreateDrawer = () => {
+    setActiveEditingProduct(null);
+    setDrawerOpen(true);
+  };
+
+  const handleSaveProduct = async (productData: Partial<ProductDTO>) => {
+    if (activeEditingProduct) {
+      // Update existing
+      await api.updateProduct(activeEditingProduct.id, productData);
+    } else {
+      // Create new
+      await onCreateProduct(productData as CreateProductInput);
+    }
+    if (onRefresh) onRefresh();
+  };
+
+  const handleDeleteProduct = async (id: string) => {
+    const product = products.find((p) => p.id === id);
+    if (!product) return;
+    if (
+      confirm(
+        `Are you sure you want to permanently delete product "${product.name}" (${product.sku})? This will purge its stock levels.`
+      )
+    ) {
+      try {
+        await api.deleteProduct(id);
+        if (onRefresh) onRefresh();
+      } catch (err: any) {
+        alert(err.message || 'Failed to delete product.');
       }
-
-      if (onRefresh) onRefresh();
-      setTimeout(() => {
-        setSaveSuccess(null);
-      }, 2500);
-    } catch (err: any) {
-      alert(err.response?.data?.error || err.message || 'Failed to save product.');
-    } finally {
-      setSaving(false);
     }
   };
 
-  const updatePackagingField = (
-    index: number,
-    field: keyof ProductPackagingDTO,
-    value: any
-  ) => {
-    if (!activeProduct.packagings) return;
-    const updated = [...activeProduct.packagings];
-    updated[index] = { ...updated[index], [field]: value };
-    setActiveProduct({ ...activeProduct, packagings: updated });
+  const handleOpenBarcodeModal = (prods: ProductDTO[]) => {
+    setBarcodeModalProducts(prods);
+    setBarcodeModalOpen(true);
   };
 
-  // Categories list
-  const categories = [
-    'ALL',
-    ...Array.from(
-      new Set([
-        ...masterCategories.map((c) => c.name),
-        ...products.map((p) => p.category || 'General'),
-      ])
-    ).filter(Boolean),
-  ];
+  const handleClearAllFilters = () => {
+    setSearchQuery('');
+    setSelectedCategory('ALL');
+    setStockStatusFilter('ALL');
+    setStorageFilter('ALL');
+  };
 
-  // Filtering products
-  const filteredProducts = products.filter((p) => {
-    const matchesSearch =
-      p.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.barcode.includes(searchTerm) ||
-      (p.hsCode && p.hsCode.includes(searchTerm)) ||
-      (p.internalReference && p.internalReference.toLowerCase().includes(searchTerm.toLowerCase()));
-
-    const matchesCategory =
-      selectedCategory === 'ALL' || p.category === selectedCategory;
-
-    let matchesHealth = true;
-    if (stockHealthFilter === 'CRITICAL') {
-      matchesHealth = p.totalStock <= p.reorderPoint * 0.5;
-    } else if (stockHealthFilter === 'WARNING') {
-      matchesHealth = p.totalStock > p.reorderPoint * 0.5 && p.totalStock <= p.reorderPoint;
-    } else if (stockHealthFilter === 'HEALTHY') {
-      matchesHealth = p.totalStock > p.reorderPoint;
-    }
-
-    let matchesPackaging = true;
-    if (packagingLevelFilter !== 'ALL') {
-      matchesPackaging = (p.packagings || []).some(
-        (pkg) => pkg.packageLevel === packagingLevelFilter
-      );
-    }
-
-    return matchesSearch && matchesCategory && matchesHealth && matchesPackaging;
-  });
-
-  // KPI Calculations
-  const totalValuation = products.reduce((acc, p) => acc + p.totalStock * p.unitCost, 0);
-  const lowStockCount = products.filter((p) => p.totalStock <= p.reorderPoint).length;
+  const hasActiveFilters =
+    searchQuery.trim() !== '' ||
+    selectedCategory !== 'ALL' ||
+    stockStatusFilter !== 'ALL' ||
+    storageFilter !== 'ALL';
 
   return (
     <div className="space-y-6">
-      {/* Top Header Card */}
-      <div className="bg-white border border-[#e5e1d5] rounded-2xl p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+      {/* 1. Header & Primary Operations Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2.5">
-            <h2 className="text-xl font-bold text-[#122b39] tracking-tight">Product Master & Packaging Hierarchy</h2>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-[#ede9df] text-[#8c5e15] border border-[#d8d1c1]">
-              Odoo 19 / SAP Tier-1 Grid
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-bold text-[#152836]">Product Master & Catalog</h1>
+            <span className="px-2 py-0.5 rounded-md bg-[#ede9df] text-[#122b39] font-mono text-xs font-bold">
+              {products.length} SKUs
             </span>
           </div>
-          <p className="text-xs text-[#6a7d8d] mt-1">
-            Multi-tier packaging schema with GTIN-14 barcodes, customs HS tariff codes, and autonomous inventory tracking.
+          <p className="text-xs text-[#7a8b99] mt-0.5">
+            Centralized item master catalog, unit conversions, customs tariffs, and warehouse positioning
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* Quick Keyboard Info */}
-          <div className="hidden lg:flex items-center gap-2 text-xs text-[#526677] bg-[#f8f5ee] px-3 py-1.5 rounded-xl border border-[#e5e1d5]">
-            <span className="font-mono text-[#122b39] font-bold bg-white px-1.5 py-0.5 rounded border border-[#e5e1d5] text-[10px]">
-              N
-            </span>
-            <span>New SKU</span>
-            <span className="text-[#cfc9b9]">•</span>
-            <span className="font-mono text-[#122b39] font-bold bg-white px-1.5 py-0.5 rounded border border-[#e5e1d5] text-[10px]">
-              /
-            </span>
-            <span>Search</span>
-            <span className="text-[#cfc9b9]">•</span>
-            <span className="font-mono text-[#122b39] font-bold bg-white px-1.5 py-0.5 rounded border border-[#e5e1d5] text-[10px]">
-              Esc
-            </span>
-            <span>Close</span>
-          </div>
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <button
+            onClick={() => setImportExportModalOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-[#faf9f6] border border-[#ded8cb] rounded-xl text-xs font-bold text-[#152836] shadow-2xs transition cursor-pointer"
+          >
+            <Upload className="w-3.5 h-3.5 text-[#122b39]" />
+            <span>Import / Export CSV</span>
+          </button>
 
           <button
-            onClick={openNewProductDrawer}
-            className="flex items-center gap-2 px-4.5 py-2.5 rounded-xl bg-[#122b39] hover:bg-[#1a3d52] text-white font-bold text-xs shadow-xs transition-all cursor-pointer"
+            onClick={() => handleOpenBarcodeModal(selectedProductIds.length > 0 ? products.filter(p => selectedProductIds.includes(p.id)) : products.slice(0, 10))}
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-[#faf9f6] border border-[#ded8cb] rounded-xl text-xs font-bold text-[#152836] shadow-2xs transition cursor-pointer"
+          >
+            <Barcode className="w-3.5 h-3.5 text-[#e5a329]" />
+            <span>Print Labels</span>
+          </button>
+
+          {onRefresh && (
+            <button
+              onClick={onRefresh}
+              disabled={loading}
+              title="Refresh Catalog Data"
+              className="p-2 bg-white hover:bg-[#faf9f6] border border-[#ded8cb] rounded-xl text-[#526677] transition cursor-pointer"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+          )}
+
+          <button
+            onClick={handleOpenCreateDrawer}
+            className="flex items-center gap-2 px-4 py-2 bg-[#122b39] hover:bg-[#1a3d52] text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
           >
             <Plus className="w-4 h-4 text-[#e5a329]" />
-            <span>Register Product (N)</span>
+            <span>Register New SKU</span>
           </button>
         </div>
       </div>
 
-      {/* KPI Micro-Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="p-4 rounded-2xl bg-white border border-[#e5e1d5] shadow-xs">
-          <div className="text-[#6a7d8d] text-xs flex items-center gap-1.5 font-medium">
-            <Boxes className="w-4 h-4 text-[#e5a329]" />
-            Catalog Master SKUs
+      {/* 2. Executive Inventory KPIs */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5">
+        <div className="p-4 rounded-2xl bg-white border border-[#ded8cb] shadow-xs">
+          <div className="text-[10px] text-[#7a8b99] font-bold uppercase tracking-wider">
+            Total Catalog SKUs
           </div>
-          <div className="text-2xl font-mono font-bold text-[#122b39] mt-1.5">{products.length}</div>
+          <div className="font-mono text-xl font-bold text-[#152836] mt-1">
+            {kpis.totalProducts}
+          </div>
+          <div className="text-[11px] text-[#7a8b99] mt-0.5">Active items in ERP</div>
         </div>
 
-        <div className="p-4 rounded-2xl bg-white border border-[#e5e1d5] shadow-xs">
-          <div className="text-[#6a7d8d] text-xs flex items-center gap-1.5 font-medium">
-            <DollarSign className="w-4 h-4 text-emerald-600" />
-            Active Asset Valuation
+        <div className="p-4 rounded-2xl bg-white border border-[#ded8cb] shadow-xs">
+          <div className="text-[10px] text-[#7a8b99] font-bold uppercase tracking-wider">
+            Retail Asset Valuation
           </div>
-          <div className="text-2xl font-mono font-bold text-[#122b39] mt-1.5">
-            ${totalValuation.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+          <div className="font-mono text-xl font-bold text-[#152836] mt-1">
+            ${(kpis.totalValuation / 1000).toFixed(1)}k
           </div>
+          <div className="text-[11px] text-[#7a8b99] mt-0.5">Based on selling price</div>
         </div>
 
-        <div className="p-4 rounded-2xl bg-white border border-[#e5e1d5] shadow-xs">
-          <div className="text-[#6a7d8d] text-xs flex items-center gap-1.5 font-medium">
-            <ShieldAlert className="w-4 h-4 text-amber-600" />
-            Stock Below ROP
+        <div className="p-4 rounded-2xl bg-white border border-[#ded8cb] shadow-xs">
+          <div className="text-[10px] text-[#7a8b99] font-bold uppercase tracking-wider">
+            COGS Inventory Cost
           </div>
-          <div className="text-2xl font-mono font-bold text-amber-600 mt-1.5">{lowStockCount}</div>
+          <div className="font-mono text-xl font-bold text-[#526677] mt-1">
+            ${(kpis.totalCostValuation / 1000).toFixed(1)}k
+          </div>
+          <div className="text-[11px] text-[#7a8b99] mt-0.5">Baseline purchase cost</div>
         </div>
 
-        <div className="p-4 rounded-2xl bg-white border border-[#e5e1d5] shadow-xs">
-          <div className="text-[#6a7d8d] text-xs flex items-center gap-1.5 font-medium">
-            <Layers className="w-4 h-4 text-[#122b39]" />
-            Multi-Tier Packaging Tiers
+        <div className="p-4 rounded-2xl bg-white border border-[#ded8cb] shadow-xs">
+          <div className="text-[10px] text-[#7a8b99] font-bold uppercase tracking-wider">
+            Average Catalog Margin
           </div>
-          <div className="text-2xl font-mono font-bold text-[#122b39] mt-1.5">4 Levels</div>
+          <div className="font-mono text-xl font-bold text-emerald-700 mt-1">
+            {kpis.averageMargin.toFixed(1)}%
+          </div>
+          <div className="text-[11px] text-[#7a8b99] mt-0.5">Weighted gross margin</div>
+        </div>
+
+        <div
+          onClick={() => setStockStatusFilter(stockStatusFilter === 'LOW' ? 'ALL' : 'LOW')}
+          className={`p-4 rounded-2xl border shadow-xs cursor-pointer transition ${
+            stockStatusFilter === 'LOW'
+              ? 'bg-amber-50 border-amber-300 ring-2 ring-amber-300/30'
+              : 'bg-white border-[#ded8cb] hover:bg-[#faf9f6]'
+          }`}
+        >
+          <div className="text-[10px] text-amber-800 font-bold uppercase tracking-wider flex items-center justify-between">
+            <span>Reorder Attention</span>
+            <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+          </div>
+          <div className="font-mono text-xl font-bold text-amber-900 mt-1">
+            {kpis.lowStockCount}
+          </div>
+          <div className="text-[11px] text-amber-700 mt-0.5">Stock below safety ROP</div>
+        </div>
+
+        <div
+          onClick={() => setStockStatusFilter(stockStatusFilter === 'ZERO' ? 'ALL' : 'ZERO')}
+          className={`p-4 rounded-2xl border shadow-xs cursor-pointer transition ${
+            stockStatusFilter === 'ZERO'
+              ? 'bg-red-50 border-red-300 ring-2 ring-red-300/30'
+              : 'bg-white border-[#ded8cb] hover:bg-[#faf9f6]'
+          }`}
+        >
+          <div className="text-[10px] text-red-800 font-bold uppercase tracking-wider flex items-center justify-between">
+            <span>Stock-Out Depleted</span>
+            <ShieldAlert className="w-3.5 h-3.5 text-red-600" />
+          </div>
+          <div className="font-mono text-xl font-bold text-red-900 mt-1">
+            {kpis.zeroStockCount}
+          </div>
+          <div className="text-[11px] text-red-700 mt-0.5">0 units available</div>
         </div>
       </div>
 
-      {/* Filters & Enterprise Density Table Controls */}
-      <div className="bg-white rounded-2xl border border-[#e5e1d5] p-5 shadow-xs space-y-4">
-        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
-          {/* Quick Search */}
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 text-[#7a8b99] absolute left-3.5 top-1/2 -translate-y-1/2" />
+      {/* 3. Filter Bar & View Switcher */}
+      <div className="bg-white p-4 rounded-2xl border border-[#ded8cb] shadow-xs space-y-3">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          {/* Search bar */}
+          <div className="relative flex-1 max-w-md">
+            <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-[#7a8b99]" />
             <input
-              ref={searchInputRef}
               type="text"
-              placeholder="Search SKU, Product Name, GTIN Barcode, HS Customs Code, or Vendor (Press '/' to focus)..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-9.5 pr-4 py-2.5 bg-[#faf9f6] border border-[#e5e1d5] rounded-xl text-xs text-[#122b39] placeholder-[#7a8b99] focus:outline-none focus:border-[#122b39] focus:bg-white font-mono transition-colors"
+              placeholder="Search by SKU, GTIN, product name, brand, or HS tariff..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 bg-[#faf9f6] border border-[#ded8cb] rounded-xl text-xs font-medium text-[#152836] focus:outline-none focus:border-[#122b39]"
             />
-            {searchTerm && (
+            {searchQuery && (
               <button
-                onClick={() => setSearchTerm('')}
-                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#7a8b99] hover:text-[#122b39] text-xs cursor-pointer"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#7a8b99] hover:text-[#152836]"
               >
-                ✕
+                <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
 
-          {/* Filters */}
-          <div className="flex items-center gap-2.5 overflow-x-auto pb-1 lg:pb-0">
-            <select
-              value={selectedCategory}
-              onChange={(e) => setSelectedCategory(e.target.value)}
-              className="px-3.5 py-2.5 bg-[#faf9f6] border border-[#e5e1d5] rounded-xl text-xs text-[#152836] font-medium focus:outline-none focus:border-[#122b39]"
-            >
-              {categories.map((c) => (
-                <option key={c} value={c}>
-                  Category: {c}
-                </option>
-              ))}
-            </select>
+          {/* Controls: Storage Filter & View Modes */}
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Storage condition dropdown */}
+            <div className="flex items-center gap-1.5 text-xs text-[#526677]">
+              <span className="font-bold">Storage:</span>
+              <select
+                value={storageFilter}
+                onChange={(e) => setStorageFilter(e.target.value)}
+                className="px-2.5 py-1.5 bg-[#faf9f6] border border-[#ded8cb] rounded-xl text-xs font-medium text-[#152836]"
+              >
+                <option value="ALL">All Environments</option>
+                {catalogStorageConditions.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-            <select
-              value={stockHealthFilter}
-              onChange={(e) => setStockHealthFilter(e.target.value as any)}
-              className="px-3.5 py-2.5 bg-[#faf9f6] border border-[#e5e1d5] rounded-xl text-xs text-[#152836] font-medium focus:outline-none focus:border-[#122b39]"
-            >
-              <option value="ALL">All Stock Health</option>
-              <option value="HEALTHY">Healthy Buffer (&gt; ROP)</option>
-              <option value="WARNING">Warning (At ROP)</option>
-              <option value="CRITICAL">Critical Low (&lt; 50% ROP)</option>
-            </select>
+            {/* Stock status filter buttons */}
+            <div className="flex items-center bg-[#faf9f6] p-1 rounded-xl border border-[#ded8cb] text-xs">
+              <button
+                onClick={() => setStockStatusFilter('ALL')}
+                className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                  stockStatusFilter === 'ALL'
+                    ? 'bg-[#122b39] text-white shadow-2xs'
+                    : 'text-[#7a8b99] hover:text-[#152836]'
+                }`}
+              >
+                All Stock
+              </button>
+              <button
+                onClick={() => setStockStatusFilter('HEALTHY')}
+                className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                  stockStatusFilter === 'HEALTHY'
+                    ? 'bg-[#122b39] text-white shadow-2xs'
+                    : 'text-[#7a8b99] hover:text-[#152836]'
+                }`}
+              >
+                Healthy
+              </button>
+              <button
+                onClick={() => setStockStatusFilter('LOW')}
+                className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                  stockStatusFilter === 'LOW'
+                    ? 'bg-amber-600 text-white shadow-2xs'
+                    : 'text-[#7a8b99] hover:text-[#152836]'
+                }`}
+              >
+                Low (≤ ROP)
+              </button>
+            </div>
 
-            <select
-              value={packagingLevelFilter}
-              onChange={(e) => setPackagingLevelFilter(e.target.value)}
-              className="px-3.5 py-2.5 bg-[#faf9f6] border border-[#e5e1d5] rounded-xl text-xs text-[#152836] font-medium focus:outline-none focus:border-[#122b39]"
-            >
-              <option value="ALL">All Packaging</option>
-              <option value="EACH">Each / Single</option>
-              <option value="INNER_PACK">Inner Pack (6x)</option>
-              <option value="CASE">Master Case (24x)</option>
-              <option value="PALLET">Logistics Pallet (144x)</option>
-            </select>
-          </div>
-        </div>
-
-        {/* HIGH-DENSITY ENTERPRISE DATA GRID */}
-        <div className="overflow-x-auto rounded-xl border border-[#e5e1d5]">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-[#f8f5ee] text-[#526677] font-bold uppercase tracking-wider border-b border-[#e5e1d5] text-[11px]">
-                <th className="py-3 px-3.5">Status</th>
-                <th className="py-3 px-3.5">SKU / HS Code</th>
-                <th className="py-3 px-3.5">Barcode (GTIN)</th>
-                <th className="py-3 px-3.5">Product Name & Category</th>
-                <th className="py-3 px-3.5">Packaging Tiers</th>
-                <th className="py-3 px-3.5 text-center">Base UoM</th>
-                <th className="py-3 px-3.5 text-right">Unit Cost</th>
-                <th className="py-3 px-3.5 text-right">Retail</th>
-                <th className="py-3 px-3.5 text-right">NEOM Stock</th>
-                <th className="py-3 px-3.5 text-center">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#f0ece2] font-mono">
-              {loading ? (
-                <tr>
-                  <td colSpan={10} className="py-12 text-center text-[#7a8b99]">
-                    Loading enterprise catalog from NEOM Master Database...
-                  </td>
-                </tr>
-              ) : filteredProducts.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="py-12 text-center text-[#7a8b99]">
-                    No products matched search criteria. Press 'N' to register a new SKU.
-                  </td>
-                </tr>
-              ) : (
-                filteredProducts.map((p) => {
-                  const isCritical = p.totalStock <= p.reorderPoint * 0.5;
-                  const isWarning = p.totalStock <= p.reorderPoint && !isCritical;
-                  const packagings = p.packagings || [];
-
-                  return (
-                    <tr
-                      key={p.id}
-                      onClick={() => openInspectDrawer(p)}
-                      className="hover:bg-[#faf9f6] transition-colors cursor-pointer group"
-                    >
-                      {/* Discrete Dot Status Indicator */}
-                      <td className="py-2.5 px-3.5 whitespace-nowrap">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`w-2 h-2 rounded-full shrink-0 ${
-                              isCritical ? 'bg-red-500' : isWarning ? 'bg-amber-500' : 'bg-emerald-500'
-                            }`}
-                          />
-                          <span
-                            className={`text-[11px] font-semibold ${
-                              isCritical ? 'text-red-700' : isWarning ? 'text-amber-700' : 'text-emerald-700'
-                            }`}
-                          >
-                            {isCritical ? 'Critical' : isWarning ? 'Low' : 'Normal'}
-                          </span>
-                        </div>
-                      </td>
-
-                      {/* SKU & HS Code */}
-                      <td className="py-2.5 px-3.5 whitespace-nowrap">
-                        <div className="font-bold text-[#122b39] group-hover:text-[#e5a329] transition-colors">
-                          {p.sku}
-                        </div>
-                        {p.hsCode && (
-                          <div className="text-[10px] text-[#7a8b99]">HS: {p.hsCode}</div>
-                        )}
-                      </td>
-
-                      {/* Barcode */}
-                      <td className="py-2.5 px-3.5 whitespace-nowrap text-[#526677]">
-                        <span className="bg-[#f6f4ed] px-2 py-0.5 rounded-md border border-[#e5e1d5] text-[11px]">
-                          {p.barcode}
-                        </span>
-                      </td>
-
-                      {/* Name & Category */}
-                      <td className="py-2.5 px-3.5 font-sans">
-                        <div className="font-semibold text-[#152836] line-clamp-1">{p.name}</div>
-                        <div className="text-[11px] text-[#6a7d8d] flex items-center gap-2 mt-0.5 font-mono">
-                          <span className="text-[#8c5e15] font-semibold">{p.category}</span>
-                          {p.defaultVendor && (
-                            <>
-                              <span className="text-[#cfc9b9]">•</span>
-                              <span className="text-[#7a8b99]">{p.defaultVendor}</span>
-                            </>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Packaging Tiers Indicators */}
-                      <td className="py-2.5 px-3.5 whitespace-nowrap font-sans">
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            title="Each Level (1x)"
-                            className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-[#ede9df] text-[#122b39] border border-[#dcd7cb]"
-                          >
-                            EA
-                          </span>
-                          {packagings.some((pkg) => pkg.packageLevel === 'INNER_PACK') && (
-                            <span
-                              title="Inner Pack (6x)"
-                              className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-sky-100 text-sky-800 border border-sky-200"
-                            >
-                              INP-6
-                            </span>
-                          )}
-                          {packagings.some((pkg) => pkg.packageLevel === 'CASE') && (
-                            <span
-                              title="Master Case (24x)"
-                              className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-purple-100 text-purple-800 border border-purple-200"
-                            >
-                              CS-24
-                            </span>
-                          )}
-                          {packagings.some((pkg) => pkg.packageLevel === 'PALLET') && (
-                            <span
-                              title="Logistics Pallet (144x)"
-                              className="px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-amber-100 text-amber-800 border border-amber-200"
-                            >
-                              PL-144
-                            </span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Base UoM */}
-                      <td className="py-2.5 px-3.5 text-center whitespace-nowrap text-[#526677] font-semibold">
-                        {p.unitOfMeasure || 'EA'}
-                      </td>
-
-                      {/* Unit Cost */}
-                      <td className="py-2.5 px-3.5 text-right whitespace-nowrap text-[#526677] tabular-nums">
-                        ${p.unitCost.toFixed(2)}
-                      </td>
-
-                      {/* Retail Price */}
-                      <td className="py-2.5 px-3.5 text-right whitespace-nowrap font-bold text-[#122b39] tabular-nums">
-                        ${p.retailPrice.toFixed(2)}
-                      </td>
-
-                      {/* Total Stock */}
-                      <td className="py-2.5 px-3.5 text-right whitespace-nowrap tabular-nums">
-                        <div
-                          className={`font-bold ${
-                            isCritical ? 'text-red-700' : isWarning ? 'text-amber-700' : 'text-[#122b39]'
-                          }`}
-                        >
-                          {p.totalStock} {p.unitOfMeasure || 'units'}
-                        </div>
-                        <div className="text-[10px] text-[#7a8b99]">ROP: {p.reorderPoint}</div>
-                      </td>
-
-                      {/* Action */}
-                      <td className="py-2.5 px-3.5 text-center whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openInspectDrawer(p);
-                          }}
-                          className="px-3 py-1 rounded-lg bg-[#f6f4ed] hover:bg-[#ede9df] text-[#122b39] text-xs font-semibold border border-[#e5e1d5] transition-colors cursor-pointer"
-                        >
-                          Inspect
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* SLIDING RIGHT-HAND DRAWER (SAP / ODOO 19 STYLE) */}
-      {drawerOpen && (
-        <div className="fixed inset-0 z-50 overflow-hidden">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/30 backdrop-blur-xs transition-opacity"
-            onClick={() => setDrawerOpen(false)}
-          />
-
-          <div className="fixed inset-y-0 right-0 max-w-full flex pl-10">
-            <div className="w-screen max-w-2xl bg-white border-l border-[#e5e1d5] shadow-2xl flex flex-col justify-between">
-              {/* Drawer Header */}
-              <div className="px-6 py-4 border-b border-[#f0ece2] bg-[#faf9f6] flex items-center justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono font-bold text-[#8c5e15] uppercase">
-                      {isEditing ? `Edit Master: ${activeProduct.sku}` : 'Register New Enterprise SKU'}
-                    </span>
-                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#ede9df] text-[#122b39] border border-[#dcd7cb]">
-                      Tier-1 ERP
-                    </span>
-                  </div>
-                  <h3 className="text-lg font-bold text-[#122b39] tracking-tight mt-0.5">
-                    {activeProduct.name || 'Untitled Inventory Item'}
-                  </h3>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleSaveProduct}
-                    disabled={saving}
-                    className="px-4 py-2 rounded-xl bg-[#122b39] hover:bg-[#1a3d52] text-white font-bold text-xs shadow-xs transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
-                  >
-                    <Check className="w-3.5 h-3.5 text-[#e5a329]" />
-                    <span>{saving ? 'Saving...' : isEditing ? 'Save Changes' : 'Register SKU'}</span>
-                  </button>
-                  <button
-                    onClick={() => setDrawerOpen(false)}
-                    className="p-2 rounded-xl bg-[#f6f4ed] hover:bg-[#ede9df] text-[#6a7d8d] hover:text-[#122b39] transition-colors cursor-pointer"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Drawer Tabs Navigation */}
-              <div className="px-6 border-b border-[#f0ece2] bg-[#f8f5ee] flex items-center gap-4 text-xs font-semibold overflow-x-auto">
-                <button
-                  onClick={() => setActiveDrawerTab('GENERAL')}
-                  className={`py-3 border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
-                    activeDrawerTab === 'GENERAL'
-                      ? 'border-[#122b39] text-[#122b39] font-bold'
-                      : 'border-transparent text-[#6a7d8d] hover:text-[#122b39]'
-                  }`}
-                >
-                  General & Customs
-                </button>
-                <button
-                  onClick={() => setActiveDrawerTab('PACKAGING')}
-                  className={`py-3 border-b-2 transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
-                    activeDrawerTab === 'PACKAGING'
-                      ? 'border-[#122b39] text-[#122b39] font-bold'
-                      : 'border-transparent text-[#6a7d8d] hover:text-[#122b39]'
-                  }`}
-                >
-                  <Package className="w-3.5 h-3.5" />
-                  Multi-Tier Packaging ({activeProduct.packagings?.length || 0})
-                </button>
-                <button
-                  onClick={() => setActiveDrawerTab('PROCUREMENT')}
-                  className={`py-3 border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
-                    activeDrawerTab === 'PROCUREMENT'
-                      ? 'border-[#122b39] text-[#122b39] font-bold'
-                      : 'border-transparent text-[#6a7d8d] hover:text-[#122b39]'
-                  }`}
-                >
-                  Procurement & Sourcing
-                </button>
-                <button
-                  onClick={() => setActiveDrawerTab('STOCK')}
-                  className={`py-3 border-b-2 transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
-                    activeDrawerTab === 'STOCK'
-                      ? 'border-[#122b39] text-[#122b39] font-bold'
-                      : 'border-transparent text-[#6a7d8d] hover:text-[#122b39]'
-                  }`}
-                >
-                  <Warehouse className="w-3.5 h-3.5" />
-                  Facility Stock ({activeProduct.totalStock || 0})
-                </button>
-              </div>
-
-              {/* Drawer Scrollable Content Area */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-white">
-                {saveSuccess && (
-                  <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                    <span className="font-semibold">{saveSuccess}</span>
-                  </div>
-                )}
-
-                {/* TAB 1: GENERAL & CUSTOMS */}
-                {activeDrawerTab === 'GENERAL' && (
-                  <div className="space-y-4.5">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Product Name *
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={activeProduct.name || ''}
-                          onChange={(e) => setActiveProduct({ ...activeProduct, name: e.target.value })}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] focus:outline-none focus:border-[#122b39] focus:bg-white"
-                          placeholder="e.g. Edge AI Industrial Telemetry Gateway"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Master SKU Code *
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={activeProduct.sku || ''}
-                          onChange={(e) => setActiveProduct({ ...activeProduct, sku: e.target.value.toUpperCase() })}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-mono font-bold focus:outline-none focus:border-[#122b39] focus:bg-white"
-                          placeholder="NEOM-IOT-GW500"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Base Barcode (EAN/GTIN-13) *
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={activeProduct.barcode || ''}
-                          onChange={(e) => setActiveProduct({ ...activeProduct, barcode: e.target.value })}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-mono focus:outline-none focus:border-[#122b39] focus:bg-white"
-                          placeholder="6281002938101"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Category *
-                        </label>
-                        <select
-                          value={activeProduct.category || ''}
-                          onChange={(e) => setActiveProduct({ ...activeProduct, category: e.target.value })}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-medium focus:outline-none focus:border-[#122b39] focus:bg-white"
-                        >
-                          {masterCategories.length > 0 ? (
-                            masterCategories.map((c) => (
-                              <option key={c.id} value={c.name}>
-                                {c.name} ({c.code})
-                              </option>
-                            ))
-                          ) : (
-                            <option value="Smart Infrastructure">Smart Infrastructure</option>
-                          )}
-                          {activeProduct.category &&
-                            !masterCategories.some(
-                              (c) => c.name.toLowerCase() === activeProduct.category?.toLowerCase()
-                            ) && (
-                              <option value={activeProduct.category}>{activeProduct.category}</option>
-                            )}
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* Extended Enterprise Specifications */}
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Brand / Manufacturer
-                        </label>
-                        <input
-                          type="text"
-                          value={activeProduct.brand || ''}
-                          onChange={(e) => setActiveProduct({ ...activeProduct, brand: e.target.value })}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] focus:outline-none focus:border-[#122b39] focus:bg-white"
-                          placeholder="e.g. Red Sea Microelectronics"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Storage Condition
-                        </label>
-                        <select
-                          value={activeProduct.storageCondition || 'Ambient'}
-                          onChange={(e) => setActiveProduct({ ...activeProduct, storageCondition: e.target.value })}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-medium focus:outline-none focus:border-[#122b39] focus:bg-white"
-                        >
-                          <option value="Ambient">Ambient Standard Bay (15°C - 25°C)</option>
-                          <option value="Climate Controlled">Climate Controlled (20°C ± 2°C)</option>
-                          <option value="Cold Chain (2-8°C)">Cold Chain Refrigerated (2°C - 8°C)</option>
-                          <option value="Frozen (-20°C)">Deep Freeze (-20°C)</option>
-                          <option value="Hazmat Class 3">Flammable / Hazmat Class 3</option>
-                          <option value="ESD Safe">ESD Sensitive Electronic Bay</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Net Weight (kg)
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={activeProduct.weight || ''}
-                          onChange={(e) => setActiveProduct({ ...activeProduct, weight: parseFloat(e.target.value) || 0 })}
-                          className="w-full px-3 py-2 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs font-mono text-[#122b39] focus:outline-none focus:border-[#122b39]"
-                          placeholder="2.45"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Dimensions (L×W×H)
-                        </label>
-                        <input
-                          type="text"
-                          value={activeProduct.dimensions || ''}
-                          onChange={(e) => setActiveProduct({ ...activeProduct, dimensions: e.target.value })}
-                          className="w-full px-3 py-2 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs font-mono text-[#122b39] focus:outline-none focus:border-[#122b39]"
-                          placeholder="30x20x15 cm"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Country of Origin
-                        </label>
-                        <input
-                          type="text"
-                          value={activeProduct.countryOfOrigin || ''}
-                          onChange={(e) => setActiveProduct({ ...activeProduct, countryOfOrigin: e.target.value })}
-                          className="w-full px-3 py-2 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] focus:outline-none focus:border-[#122b39]"
-                          placeholder="Saudi Arabia (KSA)"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                        Technical Product Description
-                      </label>
-                      <textarea
-                        rows={3}
-                        value={activeProduct.description || ''}
-                        onChange={(e) => setActiveProduct({ ...activeProduct, description: e.target.value })}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] focus:outline-none focus:border-[#122b39] focus:bg-white"
-                        placeholder="Detailed specifications, temperature ratings, ingress protection..."
-                      />
-                    </div>
-
-                    {/* Customs Tariff & Red Sea Authority Reference */}
-                    <div className="p-4.5 rounded-2xl bg-[#f8f5ee] border border-[#e5e1d5] space-y-3">
-                      <div className="text-xs font-bold text-[#122b39] flex items-center gap-1.5">
-                        <FileText className="w-4 h-4 text-[#e5a329]" />
-                        Saudi Customs & Harmonized System (HS) Code
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[11px] text-[#6a7d8d] font-semibold mb-1">
-                            HS Tariff Code (Zakat, Tax & Customs)
-                          </label>
-                          <input
-                            type="text"
-                            value={activeProduct.hsCode || ''}
-                            onChange={(e) => setActiveProduct({ ...activeProduct, hsCode: e.target.value })}
-                            className="w-full px-3 py-2 rounded-xl bg-white border border-[#e5e1d5] text-xs text-[#122b39] font-mono"
-                            placeholder="8517.62.0000"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] text-[#6a7d8d] font-semibold mb-1">
-                            Internal Reference (NEOM Asset ID)
-                          </label>
-                          <input
-                            type="text"
-                            value={activeProduct.internalReference || ''}
-                            onChange={(e) =>
-                              setActiveProduct({ ...activeProduct, internalReference: e.target.value })
-                            }
-                            className="w-full px-3 py-2 rounded-xl bg-white border border-[#e5e1d5] text-xs text-[#122b39] font-mono"
-                            placeholder="NEOM-GW-REF-26A"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* TAB 2: MULTI-TIER UOM & PACKAGING HIERARCHY */}
-                {activeDrawerTab === 'PACKAGING' && (
-                  <div className="space-y-5">
-                    {/* Unit of Measure Assignment */}
-                    <div className="p-4.5 rounded-2xl bg-[#f8f5ee] border border-[#e5e1d5] space-y-3">
-                      <div className="text-xs font-bold text-[#122b39] flex items-center gap-1.5">
-                        <Sliders className="w-4 h-4 text-[#e5a329]" />
-                        Base & Transactional Units of Measure (UoM)
-                      </div>
-                      <div className="grid grid-cols-3 gap-3">
-                        <div>
-                          <label className="block text-[11px] text-[#6a7d8d] font-semibold mb-1">Base UoM (Inventory)</label>
-                          <select
-                            value={activeProduct.baseUoMId || 'uom-ea'}
-                            onChange={(e) => setActiveProduct({ ...activeProduct, baseUoMId: e.target.value })}
-                            className="w-full px-2.5 py-2 rounded-xl bg-white border border-[#e5e1d5] text-xs text-[#122b39] font-medium"
-                          >
-                            {uoms.map((u) => (
-                              <option key={u.id} value={u.id}>
-                                {u.name} ({u.code})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] text-[#6a7d8d] font-semibold mb-1">Default Purchase UoM</label>
-                          <select
-                            value={activeProduct.purchaseUoMId || 'uom-cs24'}
-                            onChange={(e) => setActiveProduct({ ...activeProduct, purchaseUoMId: e.target.value })}
-                            className="w-full px-2.5 py-2 rounded-xl bg-white border border-[#e5e1d5] text-xs text-[#122b39] font-medium"
-                          >
-                            {uoms.map((u) => (
-                              <option key={u.id} value={u.id}>
-                                {u.name} ({u.code})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] text-[#6a7d8d] font-semibold mb-1">Default Sales UoM</label>
-                          <select
-                            value={activeProduct.salesUoMId || 'uom-ea'}
-                            onChange={(e) => setActiveProduct({ ...activeProduct, salesUoMId: e.target.value })}
-                            className="w-full px-2.5 py-2 rounded-xl bg-white border border-[#e5e1d5] text-xs text-[#122b39] font-medium"
-                          >
-                            {uoms.map((u) => (
-                              <option key={u.id} value={u.id}>
-                                {u.name} ({u.code})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 4-Tier Packaging Grid */}
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="text-xs font-bold text-[#122b39]">
-                          Packaging Levels Hierarchy (GTIN & Dimensions)
-                        </div>
-                        <span className="text-[11px] text-[#8c5e15] font-semibold">Barcode-Scannable Tiers</span>
-                      </div>
-
-                      <div className="space-y-3">
-                        {(activeProduct.packagings || []).map((pkg, idx) => (
-                          <div
-                            key={pkg.id || idx}
-                            className="p-4 rounded-2xl bg-[#faf9f6] border border-[#e5e1d5] space-y-3"
-                          >
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <span
-                                  className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
-                                    pkg.packageLevel === 'EACH'
-                                      ? 'bg-[#ede9df] text-[#122b39]'
-                                      : pkg.packageLevel === 'INNER_PACK'
-                                      ? 'bg-sky-100 text-sky-800'
-                                      : pkg.packageLevel === 'CASE'
-                                      ? 'bg-purple-100 text-purple-800'
-                                      : 'bg-amber-100 text-amber-800'
-                                  }`}
-                                >
-                                  Level {idx + 1}: {pkg.packageLevel.replace('_', ' ')}
-                                </span>
-                                <span className="text-xs text-[#6a7d8d] font-mono">
-                                  Contains: <strong className="text-[#122b39]">{pkg.qty}</strong> base units
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                              <div>
-                                <label className="block text-[10px] font-bold text-[#6a7d8d] uppercase tracking-wider mb-1">
-                                  Packaging GTIN Barcode
-                                </label>
-                                <input
-                                  type="text"
-                                  value={pkg.barcode}
-                                  onChange={(e) => updatePackagingField(idx, 'barcode', e.target.value)}
-                                  className="w-full px-3 py-1.5 rounded-xl bg-white border border-[#e5e1d5] text-xs text-[#122b39] font-mono font-semibold"
-                                  placeholder="Scannable Barcode"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="block text-[10px] font-bold text-[#6a7d8d] uppercase tracking-wider mb-1">
-                                  Qty Contained (Units)
-                                </label>
-                                <input
-                                  type="number"
-                                  value={pkg.qty}
-                                  onChange={(e) =>
-                                    updatePackagingField(idx, 'qty', parseInt(e.target.value, 10) || 1)
-                                  }
-                                  className="w-full px-3 py-1.5 rounded-xl bg-white border border-[#e5e1d5] text-xs text-[#122b39] font-mono font-bold"
-                                />
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-4 gap-2 pt-1">
-                              <div>
-                                <label className="block text-[10px] text-[#7a8b99]">Max Wt (kg)</label>
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  value={pkg.maxWeight}
-                                  onChange={(e) =>
-                                    updatePackagingField(idx, 'maxWeight', parseFloat(e.target.value) || 0)
-                                  }
-                                  className="w-full px-2 py-1 rounded-lg bg-white border border-[#e5e1d5] text-xs text-[#122b39] font-mono"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-[10px] text-[#7a8b99]">L (cm)</label>
-                                <input
-                                  type="number"
-                                  value={pkg.length}
-                                  onChange={(e) =>
-                                    updatePackagingField(idx, 'length', parseFloat(e.target.value) || 0)
-                                  }
-                                  className="w-full px-2 py-1 rounded-lg bg-white border border-[#e5e1d5] text-xs text-[#122b39] font-mono"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-[10px] text-[#7a8b99]">W (cm)</label>
-                                <input
-                                  type="number"
-                                  value={pkg.width}
-                                  onChange={(e) =>
-                                    updatePackagingField(idx, 'width', parseFloat(e.target.value) || 0)
-                                  }
-                                  className="w-full px-2 py-1 rounded-lg bg-white border border-[#e5e1d5] text-xs text-[#122b39] font-mono"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-[10px] text-[#7a8b99]">H (cm)</label>
-                                <input
-                                  type="number"
-                                  value={pkg.height}
-                                  onChange={(e) =>
-                                    updatePackagingField(idx, 'height', parseFloat(e.target.value) || 0)
-                                  }
-                                  className="w-full px-2 py-1 rounded-lg bg-white border border-[#e5e1d5] text-xs text-[#122b39] font-mono"
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* TAB 3: PROCUREMENT & SOURCING */}
-                {activeDrawerTab === 'PROCUREMENT' && (
-                  <div className="space-y-4.5">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Unit Cost ($)
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={activeProduct.unitCost || 0}
-                          onChange={(e) =>
-                            setActiveProduct({ ...activeProduct, unitCost: parseFloat(e.target.value) || 0 })
-                          }
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-mono font-bold"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Retail Price ($)
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={activeProduct.retailPrice || 0}
-                          onChange={(e) =>
-                            setActiveProduct({ ...activeProduct, retailPrice: parseFloat(e.target.value) || 0 })
-                          }
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-mono font-bold"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Reorder Point (ROP)
-                        </label>
-                        <input
-                          type="number"
-                          value={activeProduct.reorderPoint || 15}
-                          onChange={(e) =>
-                            setActiveProduct({ ...activeProduct, reorderPoint: parseInt(e.target.value, 10) || 0 })
-                          }
-                          className="w-full px-3.5 py-2 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-mono font-bold"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Lead Time (Days)
-                        </label>
-                        <input
-                          type="number"
-                          value={activeProduct.leadTimeDays || 7}
-                          onChange={(e) =>
-                            setActiveProduct({ ...activeProduct, leadTimeDays: parseInt(e.target.value, 10) || 0 })
-                          }
-                          className="w-full px-3.5 py-2 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-mono font-bold"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Min Order Qty (MOQ)
-                        </label>
-                        <input
-                          type="number"
-                          value={activeProduct.moq || 24}
-                          onChange={(e) =>
-                            setActiveProduct({ ...activeProduct, moq: parseInt(e.target.value, 10) || 1 })
-                          }
-                          className="w-full px-3.5 py-2 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-mono font-bold"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                        Primary Supplier / Vendor
-                      </label>
-                      <input
-                        type="text"
-                        value={activeProduct.defaultVendor || ''}
-                        onChange={(e) => setActiveProduct({ ...activeProduct, defaultVendor: e.target.value })}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-medium"
-                        placeholder="Red Sea Microelectronics Ltd"
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {/* TAB 4: MULTI-FACILITY STOCK DISTRIBUTION */}
-                {activeDrawerTab === 'STOCK' && (
-                  <div className="space-y-4">
-                    <div className="text-xs font-bold text-[#122b39] flex items-center justify-between">
-                      <span>Inventory Levels by NEOM Facility</span>
-                      <span className="font-mono text-[#8c5e15] font-bold">Total: {activeProduct.totalStock || 0} units</span>
-                    </div>
-
-                    <div className="space-y-2.5">
-                      {(activeProduct.stockByLocation || []).length === 0 ? (
-                        <div className="p-6 text-center text-xs text-[#7a8b99] bg-[#faf9f6] rounded-2xl border border-[#e5e1d5]">
-                          No physical stock registered yet across NEOM warehouses.
-                        </div>
-                      ) : (
-                        (activeProduct.stockByLocation || []).map((loc) => (
-                          <div
-                            key={loc.locationId}
-                            className="p-3.5 rounded-2xl bg-[#faf9f6] border border-[#e5e1d5] flex items-center justify-between"
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-xl bg-white border border-[#e5e1d5] flex items-center justify-center">
-                                <MapPin className="w-4 h-4 text-[#e5a329]" />
-                              </div>
-                              <div>
-                                <div className="text-xs font-bold text-[#122b39]">{loc.locationName}</div>
-                                <div className="text-[10px] text-[#7a8b99] font-mono">Code: {loc.locationCode}</div>
-                              </div>
-                            </div>
-                            <div className="text-right">
-                              <span className="text-sm font-bold font-mono text-[#122b39]">
-                                {loc.quantity} {activeProduct.unitOfMeasure || 'units'}
-                              </span>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Drawer Sticky Footer */}
-              <div className="px-6 py-4 border-t border-[#f0ece2] bg-[#faf9f6] flex items-center justify-between text-xs text-[#6a7d8d]">
-                <span>Press 'Esc' anytime to exit drawer</span>
-                <div className="flex items-center gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() => setDrawerOpen(false)}
-                    className="px-4 py-2 rounded-xl bg-[#f6f4ed] hover:bg-[#ede9df] text-[#122b39] font-bold cursor-pointer transition"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSaveProduct}
-                    disabled={saving}
-                    className="px-5 py-2 rounded-xl bg-[#122b39] hover:bg-[#1a3d52] text-white font-bold disabled:opacity-50 cursor-pointer shadow-xs transition"
-                  >
-                    {saving ? 'Saving...' : 'Apply & Save'}
-                  </button>
-                </div>
-              </div>
+            {/* View Mode Switcher */}
+            <div className="flex items-center bg-[#faf9f6] p-1 rounded-xl border border-[#ded8cb]">
+              <button
+                onClick={() => setViewMode('TABLE')}
+                title="Enterprise Data Grid"
+                className={`p-1.5 rounded-lg transition cursor-pointer ${
+                  viewMode === 'TABLE'
+                    ? 'bg-[#122b39] text-white shadow-2xs'
+                    : 'text-[#7a8b99] hover:text-[#152836]'
+                }`}
+              >
+                <TableIcon className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setViewMode('CARDS')}
+                title="Visual Catalog Cards"
+                className={`p-1.5 rounded-lg transition cursor-pointer ${
+                  viewMode === 'CARDS'
+                    ? 'bg-[#122b39] text-white shadow-2xs'
+                    : 'text-[#7a8b99] hover:text-[#152836]'
+                }`}
+              >
+                <LayoutGrid className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setViewMode('MATRIX')}
+                title="Cross-Warehouse Stock Matrix"
+                className={`p-1.5 rounded-lg transition cursor-pointer ${
+                  viewMode === 'MATRIX'
+                    ? 'bg-[#122b39] text-white shadow-2xs'
+                    : 'text-[#7a8b99] hover:text-[#152836]'
+                }`}
+              >
+                <Building2 className="w-4 h-4" />
+              </button>
             </div>
           </div>
         </div>
+
+        {/* Category Pills Bar */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 pt-1 border-t border-[#ded8cb]/60 text-xs">
+          <span className="text-[11px] font-bold text-[#7a8b99] uppercase mr-1 whitespace-nowrap">
+            Categories:
+          </span>
+          <button
+            onClick={() => setSelectedCategory('ALL')}
+            className={`px-3 py-1 rounded-lg font-bold transition whitespace-nowrap cursor-pointer ${
+              selectedCategory === 'ALL'
+                ? 'bg-[#122b39] text-white shadow-2xs'
+                : 'bg-[#faf9f6] text-[#526677] hover:bg-[#ede9df]'
+            }`}
+          >
+            All ({products.length})
+          </button>
+          {catalogCategories.map((cat) => {
+            const count = products.filter((p) => p.category === cat).length;
+            const isSelected = selectedCategory === cat;
+            return (
+              <button
+                key={cat}
+                onClick={() => setSelectedCategory(cat)}
+                className={`px-3 py-1 rounded-lg font-semibold transition whitespace-nowrap cursor-pointer ${
+                  isSelected
+                    ? 'bg-[#122b39] text-white shadow-2xs font-bold'
+                    : 'bg-[#faf9f6] text-[#526677] hover:bg-[#ede9df]'
+                }`}
+              >
+                {cat} ({count})
+              </button>
+            );
+          })}
+
+          {hasActiveFilters && (
+            <button
+              onClick={handleClearAllFilters}
+              className="ml-auto text-xs font-bold text-red-700 hover:text-red-900 underline whitespace-nowrap cursor-pointer px-2"
+            >
+              Reset Filters
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 4. Main Views: Table vs Cards vs Matrix */}
+      {viewMode === 'TABLE' && (
+        <ProductGridTable
+          products={filteredProducts}
+          selectedProductIds={selectedProductIds}
+          sortField={sortField}
+          sortDirection={sortDirection}
+          onSortChange={handleSortChange}
+          onToggleSelectAll={handleToggleSelectAll}
+          onToggleSelect={handleToggleSelect}
+          onSelectProduct={handleSelectProduct}
+          onOpenBarcodeModal={handleOpenBarcodeModal}
+          onDeleteProduct={handleDeleteProduct}
+        />
       )}
+
+      {viewMode === 'CARDS' && (
+        <ProductCardGrid
+          products={filteredProducts}
+          selectedProductIds={selectedProductIds}
+          onToggleSelect={handleToggleSelect}
+          onSelectProduct={handleSelectProduct}
+          onOpenBarcodeModal={handleOpenBarcodeModal}
+          onDeleteProduct={handleDeleteProduct}
+        />
+      )}
+
+      {viewMode === 'MATRIX' && (
+        <ProductMatrixView
+          products={filteredProducts}
+          locations={locations}
+          onSelectProduct={handleSelectProduct}
+        />
+      )}
+
+      {/* 5. Floating Bulk Actions Toolbar */}
+      <ProductBatchActionBar
+        selectedProductIds={selectedProductIds}
+        products={products}
+        categories={categories}
+        onClearSelection={() => setSelectedProductIds([])}
+        onRefresh={() => {
+          if (onRefresh) onRefresh();
+        }}
+        onOpenBarcodeModal={handleOpenBarcodeModal}
+      />
+
+      {/* 6. Comprehensive Product Detail / Create Drawer */}
+      <ProductDetailDrawer
+        isOpen={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        product={activeEditingProduct}
+        categories={categories}
+        locations={locations}
+        movements={movements}
+        onSave={handleSaveProduct}
+        onRefresh={() => {
+          if (onRefresh) onRefresh();
+        }}
+        onOpenBarcodeModal={handleOpenBarcodeModal}
+      />
+
+      {/* 7. Barcode & Thermal Label Modal */}
+      <ProductBarcodeModal
+        isOpen={barcodeModalOpen}
+        onClose={() => setBarcodeModalOpen(false)}
+        products={barcodeModalProducts}
+      />
+
+      {/* 8. CSV Import & Export Modal */}
+      <ProductImportExportModal
+        isOpen={importExportModalOpen}
+        onClose={() => setImportExportModalOpen(false)}
+        products={products}
+        categories={categories}
+        onRefresh={() => {
+          if (onRefresh) onRefresh();
+        }}
+      />
     </div>
   );
 };

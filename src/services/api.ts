@@ -135,6 +135,7 @@ export interface ProductDTO {
   brand?: string;
   countryOfOrigin?: string;
   maxCapacity?: number;
+  status?: 'ACTIVE' | 'DRAFT' | 'DISCONTINUED' | 'ARCHIVED';
   totalStock: number;
   stockByLocation: {
     locationId: string;
@@ -174,6 +175,7 @@ export interface CreateProductInput {
   brand?: string;
   countryOfOrigin?: string;
   maxCapacity?: number;
+  status?: 'ACTIVE' | 'DRAFT' | 'DISCONTINUED' | 'ARCHIVED';
 }
 
 export interface PurchaseOrderLineDTO {
@@ -955,6 +957,19 @@ export const api = {
     totalCatalogCount: number;
   }> => {
     const { data } = await apiClient.post('/products/bulk', { products });
+    return data;
+  },
+
+  bulkActionProducts: async (
+    action: 'SET_CATEGORY' | 'SET_STATUS' | 'ADJUST_PRICE' | 'DELETE',
+    productIds: string[],
+    payload: any = {}
+  ): Promise<{ success: boolean; message: string; affectedCount: number }> => {
+    const { data } = await apiClient.post('/products/bulk-action', {
+      action,
+      productIds,
+      payload,
+    });
     return data;
   },
 

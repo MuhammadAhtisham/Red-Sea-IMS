@@ -471,6 +471,13 @@ app.post('/api/products', (req, res) => {
       defaultVendor: req.body.defaultVendor || 'Red Sea Global Procurement',
       vendorLeadTime: parseInt(req.body.vendorLeadTime, 10) || 14,
       moq: parseInt(req.body.moq, 10) || 1,
+      status: req.body.status || 'ACTIVE',
+      brand: req.body.brand || '',
+      storageCondition: req.body.storageCondition || 'Ambient',
+      weight: parseFloat(req.body.weight) || 0,
+      dimensions: req.body.dimensions || '',
+      countryOfOrigin: req.body.countryOfOrigin || '',
+      maxCapacity: parseInt(req.body.maxCapacity, 10) || 500,
       packagings: req.body.packagings || [
         {
           id: `pkg-${Date.now()}-ea`,
@@ -673,6 +680,73 @@ app.post('/api/products/bulk', (req, res) => {
       inserted,
       updated,
       totalCatalogCount: db.products.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/products/bulk-action', (req, res) => {
+  try {
+    const { action, productIds, payload } = req.body;
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      res.status(400).json({ error: 'Array of product IDs is required.' });
+      return;
+    }
+
+    let affectedCount = 0;
+
+    if (action === 'SET_CATEGORY') {
+      const { category } = payload;
+      if (!category) {
+        res.status(400).json({ error: 'Category name is required.' });
+        return;
+      }
+      db.products.forEach((p) => {
+        if (productIds.includes(p.id)) {
+          p.category = category;
+          p.updatedAt = new Date().toISOString();
+          affectedCount++;
+        }
+      });
+    } else if (action === 'SET_STATUS') {
+      const { status } = payload;
+      db.products.forEach((p) => {
+        if (productIds.includes(p.id)) {
+          (p as any).status = status;
+          p.updatedAt = new Date().toISOString();
+          affectedCount++;
+        }
+      });
+    } else if (action === 'ADJUST_PRICE') {
+      const { percentChange, fixedDelta } = payload;
+      db.products.forEach((p) => {
+        if (productIds.includes(p.id)) {
+          if (percentChange !== undefined) {
+            p.retailPrice = Math.max(0, Math.round(p.retailPrice * (1 + percentChange / 100) * 100) / 100);
+          } else if (fixedDelta !== undefined) {
+            p.retailPrice = Math.max(0, Math.round((p.retailPrice + fixedDelta) * 100) / 100);
+          }
+          p.updatedAt = new Date().toISOString();
+          affectedCount++;
+        }
+      });
+    } else if (action === 'DELETE') {
+      const toDelete = new Set(productIds);
+      db.stockLevels = db.stockLevels.filter((sl) => !toDelete.has(sl.productId));
+      const initialCount = db.products.length;
+      db.products = db.products.filter((p) => !toDelete.has(p.id));
+      affectedCount = initialCount - db.products.length;
+    } else {
+      res.status(400).json({ error: `Unknown bulk action "${action}".` });
+      return;
+    }
+
+    db.saveToDisk();
+    res.json({
+      success: true,
+      message: `Bulk action "${action}" completed successfully on ${affectedCount} products.`,
+      affectedCount,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
