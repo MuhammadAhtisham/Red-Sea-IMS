@@ -2,7 +2,7 @@
 
 export type Role = 'ADMIN' | 'MANAGER' | 'STAFF';
 export type LocationType = 'WAREHOUSE' | 'STOREFRONT' | 'QUARANTINE' | 'STORE' | 'TRANSIT_HUB';
-export type MovementType = 'RECEIPT' | 'TRANSFER' | 'SALE' | 'ADJUSTMENT' | 'RETURN' | 'QUARANTINE_ISOLATION' | 'QUARANTINE_RELEASE';
+export type MovementType = 'RECEIPT' | 'TRANSFER' | 'SALE' | 'ADJUSTMENT' | 'RETURN' | 'QUARANTINE_ISOLATION' | 'QUARANTINE_RELEASE' | 'SCRAP';
 export type SyncPlatform = 'SHOPIFY' | 'WOOCOMMERCE' | 'AMAZON' | 'ODOO_ERP' | 'B2B_PORTAL';
 export type ItemStatus = 'AVAILABLE' | 'RESERVED' | 'QUARANTINED' | 'EXPIRED' | 'SHIPPED';
 export type WorkOrderStatus = 'DRAFT' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';

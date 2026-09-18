@@ -1323,14 +1323,14 @@ app.get('/api/stock-levels', (req, res) => {
 // -------------------------------------------------------------
 app.post('/api/stock/adjust', async (req, res) => {
   try {
-    const { productId, locationId, quantityDelta, reference, notes, userId } = req.body;
+    const { productId, locationId, quantityDelta, reference, notes, userId, type } = req.body;
 
     const result = await db.executeTransaction(async ({ adjustStock }) => {
       return adjustStock({
         productId,
         locationId,
         quantityDelta: parseInt(quantityDelta, 10),
-        type: 'ADJUSTMENT',
+        type: (type as any) || 'ADJUSTMENT',
         reference: reference || 'MANUAL-ADJUST',
         notes,
         userId,
@@ -1339,6 +1339,42 @@ app.post('/api/stock/adjust', async (req, res) => {
 
     res.json({
       message: 'Stock adjusted atomically.',
+      stockLevel: result.stockLevel,
+      movement: result.movement,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message, details: err.details });
+  }
+});
+
+app.post('/api/stock/scrap', async (req, res) => {
+  try {
+    const { productId, locationId, quantity, reference, notes, userId, reasonCode, disposalMethod, witnessBadge } = req.body;
+    const qty = Math.abs(parseInt(quantity, 10));
+    if (!qty || qty <= 0) {
+      res.status(400).json({ error: 'Scrap quantity must be greater than zero.' });
+      return;
+    }
+
+    const result = await db.executeTransaction(async ({ adjustStock }) => {
+      const reasonTag = reasonCode ? `[Reason: ${reasonCode}]` : '[Reason: DAMAGED]';
+      const methodTag = disposalMethod ? `[Method: ${disposalMethod}]` : '';
+      const witnessTag = witnessBadge ? `[Witness: ${witnessBadge}]` : '';
+      const formattedNotes = `${reasonTag} ${methodTag} ${witnessTag} ${notes || ''}`.trim();
+
+      return adjustStock({
+        productId,
+        locationId,
+        quantityDelta: -qty,
+        type: 'SCRAP' as any,
+        reference: reference || `SCRAP-${Date.now().toString().slice(-6)}`,
+        notes: formattedNotes,
+        userId,
+      });
+    });
+
+    res.json({
+      message: 'Scrap write-off committed and stock written down.',
       stockLevel: result.stockLevel,
       movement: result.movement,
     });
@@ -1513,7 +1549,7 @@ app.post('/api/stock/batch-operations', async (req, res) => {
             productId: op.productId,
             locationId: op.fromLocationId || op.locationId,
             quantityDelta: -qty,
-            type: 'ADJUSTMENT',
+            type: 'SCRAP' as any,
             reference: op.reference || 'BATCH-SCRAP',
             notes: op.notes || 'Batch scrap write-off',
             userId: userId || 'usr-ops-lead',

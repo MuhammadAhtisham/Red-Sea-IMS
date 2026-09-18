@@ -289,7 +289,7 @@ export interface StockMovementDTO {
   fromLocationName: string | null;
   toLocationName: string | null;
   quantity: number;
-  type: 'RECEIPT' | 'TRANSFER' | 'SALE' | 'ADJUSTMENT' | 'RETURN';
+  type: 'RECEIPT' | 'TRANSFER' | 'SALE' | 'ADJUSTMENT' | 'RETURN' | 'SCRAP';
   reference?: string;
   notes?: string;
   timestamp: string;
@@ -507,8 +507,25 @@ export const api = {
     quantityDelta: number;
     reference?: string;
     notes?: string;
+    type?: string;
+    userId?: string;
   }) => {
     const { data } = await apiClient.post('/stock/adjust', payload);
+    return data;
+  },
+
+  scrapStock: async (payload: {
+    productId: string;
+    locationId: string;
+    quantity: number;
+    reference?: string;
+    notes?: string;
+    reasonCode?: string;
+    disposalMethod?: string;
+    userId?: string;
+    witnessBadge?: string;
+  }) => {
+    const { data } = await apiClient.post('/stock/scrap', payload);
     return data;
   },
 
@@ -518,6 +535,7 @@ export const api = {
     quantity: number;
     reference?: string;
     notes?: string;
+    userId?: string;
   }) => {
     const { data } = await apiClient.post('/stock/receive', payload);
     return data;
@@ -530,6 +548,7 @@ export const api = {
     quantity: number;
     reference?: string;
     notes?: string;
+    userId?: string;
   }) => {
     const { data } = await apiClient.post('/stock/transfer', payload);
     return data;
