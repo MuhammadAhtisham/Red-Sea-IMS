@@ -17,7 +17,7 @@ import { Wave, PurchaseOrder, BillOfMaterials, Pallet } from './server/types.js'
 import { ReceivingEngine } from './server/receivingEngine.js';
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
