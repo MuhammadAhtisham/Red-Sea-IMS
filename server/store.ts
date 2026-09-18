@@ -1,4 +1,6 @@
-// Transactional In-Memory Storage Engine with ACID Guarantees & Multi-Tenant Database Profiles
+// Transactional In-Memory Storage Engine with ACID Guarantees, Disk Persistence & Multi-Tenant Profiles
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   Product,
   Location,
@@ -25,10 +27,12 @@ import {
   GoodsReceipt,
   GoodsReceiptLine,
   DatabaseInstance,
+  Category,
 } from './types.js';
 
 interface DatabaseSnapshot {
   users: User[];
+  categories: Category[];
   products: Product[];
   locations: Location[];
   stockLevels: StockLevel[];
@@ -57,6 +61,7 @@ export class TransactionError extends Error {
 
 export class EnterpriseStore {
   public users: User[] = [];
+  public categories: Category[] = [];
   public products: Product[] = [];
   public locations: Location[] = [];
   public stockLevels: StockLevel[] = [];
@@ -83,15 +88,95 @@ export class EnterpriseStore {
   private instancesData: Map<string, DatabaseSnapshot> = new Map();
 
   private isLocked: boolean = false;
+  private dataDir: string = path.join(process.cwd(), 'data');
+  private storeFilePath: string = path.join(process.cwd(), 'data', 'store_state.json');
 
   constructor() {
+    const loaded = this.loadFromDisk();
+    if (!loaded) {
+      this.seedInitialData();
+      this.saveToDisk();
+    }
+  }
+
+  // Persist current multi-tenant database state to disk
+  public saveToDisk(): void {
+    try {
+      if (!fs.existsSync(this.dataDir)) {
+        fs.mkdirSync(this.dataDir, { recursive: true });
+      }
+
+      // Update current active instance snapshot in the map
+      this.instancesData.set(this.currentDatabaseId, this.takeSnapshot());
+
+      // Update metadata counts for current instance
+      const curInst = this.databaseInstances.find((i) => i.id === this.currentDatabaseId);
+      if (curInst) {
+        curInst.productCount = this.products.length;
+        curInst.stockCount = this.stockLevels.reduce((a, b) => a + b.quantity, 0);
+        curInst.locationCount = this.locations.length;
+      }
+
+      const payload = {
+        version: '4.9',
+        savedAt: new Date().toISOString(),
+        currentDatabaseId: this.currentDatabaseId,
+        databaseInstances: this.databaseInstances,
+        instancesData: Array.from(this.instancesData.entries()),
+      };
+
+      const tmpFile = `${this.storeFilePath}.tmp`;
+      fs.writeFileSync(tmpFile, JSON.stringify(payload, null, 2), 'utf-8');
+      fs.renameSync(tmpFile, this.storeFilePath);
+    } catch (err) {
+      console.error('[EnterpriseStore] Failed to write state to disk:', err);
+    }
+  }
+
+  // Hydrate database state from disk if present
+  public loadFromDisk(): boolean {
+    try {
+      if (!fs.existsSync(this.storeFilePath)) {
+        return false;
+      }
+
+      const raw = fs.readFileSync(this.storeFilePath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.databaseInstances || !parsed.instancesData) {
+        return false;
+      }
+
+      this.currentDatabaseId = parsed.currentDatabaseId || 'db-neom-live';
+      this.databaseInstances = parsed.databaseInstances;
+      this.instancesData = new Map(parsed.instancesData);
+
+      const activeSnapshot = this.instancesData.get(this.currentDatabaseId);
+      if (activeSnapshot) {
+        this.restoreSnapshot(activeSnapshot);
+        console.log(
+          `[EnterpriseStore] Successfully hydrated ${this.products.length} SKUs, ${this.locations.length} facilities, and ${this.stockMovements.length} ledger movements from ${this.storeFilePath}`
+        );
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.warn('[EnterpriseStore] Could not hydrate from disk, will seed fresh database:', err);
+      return false;
+    }
+  }
+
+  // Restore factory seed data
+  public resetToFactorySeed(): void {
+    this.instancesData.clear();
     this.seedInitialData();
+    this.saveToDisk();
   }
 
   // Create deep snapshot for ACID rollback
   private takeSnapshot(): DatabaseSnapshot {
     return {
       users: JSON.parse(JSON.stringify(this.users)),
+      categories: JSON.parse(JSON.stringify(this.categories)),
       products: JSON.parse(JSON.stringify(this.products)),
       locations: JSON.parse(JSON.stringify(this.locations)),
       stockLevels: JSON.parse(JSON.stringify(this.stockLevels)),
@@ -115,6 +200,7 @@ export class EnterpriseStore {
   // Restore snapshot on transaction rollback or database switch
   private restoreSnapshot(snapshot: DatabaseSnapshot): void {
     this.users = snapshot.users;
+    this.categories = snapshot.categories || [];
     this.products = snapshot.products;
     this.locations = snapshot.locations;
     this.stockLevels = snapshot.stockLevels;
@@ -155,6 +241,7 @@ export class EnterpriseStore {
         transferStock: this.transferStockInternal.bind(this),
       });
       this.isLocked = false;
+      this.saveToDisk();
       return result;
     } catch (error) {
       this.restoreSnapshot(snapshot);
@@ -328,6 +415,7 @@ export class EnterpriseStore {
     });
 
     const currentInst = this.databaseInstances.find((i) => i.id === instanceId)!;
+    this.saveToDisk();
     return currentInst;
   }
 
@@ -350,6 +438,7 @@ export class EnterpriseStore {
     };
 
     this.databaseInstances.push(newInst);
+    this.saveToDisk();
     return newInst;
   }
 
@@ -358,6 +447,7 @@ export class EnterpriseStore {
     // Empty dataset with foundational locations and UoM categories preserved
     const emptySnapshot: DatabaseSnapshot = {
       users: JSON.parse(JSON.stringify(this.users)),
+      categories: JSON.parse(JSON.stringify(this.categories)),
       products: [],
       locations: JSON.parse(JSON.stringify(this.locations)),
       stockLevels: [],
@@ -393,6 +483,7 @@ export class EnterpriseStore {
     };
 
     this.databaseInstances.push(newInst);
+    this.saveToDisk();
     return newInst;
   }
 
@@ -525,6 +616,12 @@ export class EnterpriseStore {
         code: 'VOLUME',
         description: 'Cubic and volumetric measurements for fluids and gases',
       },
+      {
+        id: 'cat-length',
+        name: 'Length & Dimensions',
+        code: 'LENGTH',
+        description: 'Linear metric distance and spool lengths',
+      },
     ];
 
     this.uoms = [
@@ -539,13 +636,23 @@ export class EnterpriseStore {
         active: true,
       },
       {
-        id: 'uom-inp6',
-        name: 'Inner Pack (Pack of 6)',
-        code: 'INP6',
+        id: 'uom-pk6',
+        name: 'Pack of 6 Units',
+        code: 'PK6',
         categoryId: 'cat-count',
         categoryCode: 'COUNT',
         type: 'BIGGER',
         ratio: 6.0,
+        active: true,
+      },
+      {
+        id: 'uom-bx10',
+        name: 'Standard Box (10 Units)',
+        code: 'BX10',
+        categoryId: 'cat-count',
+        categoryCode: 'COUNT',
+        type: 'BIGGER',
+        ratio: 10.0,
         active: true,
       },
       {
@@ -579,6 +686,16 @@ export class EnterpriseStore {
         active: true,
       },
       {
+        id: 'uom-mt',
+        name: 'Metric Ton (1,000 kg)',
+        code: 'MT',
+        categoryId: 'cat-weight',
+        categoryCode: 'WEIGHT',
+        type: 'BIGGER',
+        ratio: 1000.0,
+        active: true,
+      },
+      {
         id: 'uom-g',
         name: 'Gram',
         code: 'G',
@@ -587,6 +704,92 @@ export class EnterpriseStore {
         type: 'SMALLER',
         ratio: 0.001,
         active: true,
+      },
+      {
+        id: 'uom-l',
+        name: 'Litre',
+        code: 'L',
+        categoryId: 'cat-volume',
+        categoryCode: 'VOLUME',
+        type: 'REFERENCE',
+        ratio: 1.0,
+        active: true,
+      },
+      {
+        id: 'uom-drm',
+        name: 'Industrial Drum (200 Litres)',
+        code: 'DRM',
+        categoryId: 'cat-volume',
+        categoryCode: 'VOLUME',
+        type: 'BIGGER',
+        ratio: 200.0,
+        active: true,
+      },
+      {
+        id: 'uom-m',
+        name: 'Meter (Linear)',
+        code: 'M',
+        categoryId: 'cat-length',
+        categoryCode: 'LENGTH',
+        type: 'REFERENCE',
+        ratio: 1.0,
+        active: true,
+      },
+      {
+        id: 'uom-roll',
+        name: 'Spool / Roll (100 Meters)',
+        code: 'ROLL',
+        categoryId: 'cat-length',
+        categoryCode: 'LENGTH',
+        type: 'BIGGER',
+        ratio: 100.0,
+        active: true,
+      },
+    ];
+
+    // 3B. Product Categories with taxonomy and visual coding
+    this.categories = [
+      {
+        id: 'cat-smart-infra',
+        name: 'Smart Infrastructure',
+        code: 'INFRA',
+        description: 'Edge gateways, telemetry hardware, subsea interconnects & smart city sensors',
+        color: '#122b39',
+      },
+      {
+        id: 'cat-iot-sensors',
+        name: 'Industrial IoT Sensors',
+        code: 'SENSORS',
+        description: 'High-precision vibration, temperature, and environmental telemetry sensors',
+        color: '#0284c7',
+      },
+      {
+        id: 'cat-energy',
+        name: 'Power & Energy Distribution',
+        code: 'ENERGY',
+        description: 'Solar inverters, high-capacity battery units, and smart grid transformers',
+        color: '#e5a329',
+      },
+      {
+        id: 'cat-machinery',
+        name: 'Heavy Machinery & Hydraulics',
+        code: 'MACHINERY',
+        description: 'Excavation parts, hydraulic pumps, mechanical bearings & turbine seals',
+        color: '#d97706',
+      },
+      {
+        id: 'cat-safety',
+        name: 'Safety & Tactical Gear',
+        code: 'SAFETY',
+        description: 'High-risk PPE, hazardous chemical suits, smart helmets, and oxygen packs',
+        color: '#dc2626',
+      },
+      {
+        id: 'cat-network',
+        name: 'Network & Telecommunications',
+        code: 'TELECOM',
+        description: '5G beamforming antennae, fiber-optic distribution hubs & satellite transceivers',
+        color: '#7c3aed',
       },
     ];
 

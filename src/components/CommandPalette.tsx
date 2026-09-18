@@ -88,6 +88,32 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   });
 
   commandItems.push({
+    id: 'act-create-warehouse',
+    category: 'ACTION',
+    title: 'Create New Warehouse / Storage Facility',
+    subtitle: 'Register new automated distribution center, transit port, cold hub, or storefront',
+    badge: 'Hub',
+    icon: Warehouse,
+    action: () => {
+      onNavigateTab('warehouses');
+      onClose();
+    },
+  });
+
+  commandItems.push({
+    id: 'act-warehouse-settings',
+    category: 'ACTION',
+    title: 'Warehouse & Location Management Settings',
+    subtitle: 'Manage storage capacities, zone configurations, addresses, and operational statuses',
+    badge: 'Settings',
+    icon: Warehouse,
+    action: () => {
+      onNavigateTab('warehouses');
+      onClose();
+    },
+  });
+
+  commandItems.push({
     id: 'act-po',
     category: 'ACTION',
     title: 'Open Draft Purchase Orders & Sourcing Queue',
@@ -122,6 +148,45 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     icon: Truck,
     action: () => {
       onNavigateTab('blind-receiving');
+      onClose();
+    },
+  });
+
+  commandItems.push({
+    id: 'act-categories',
+    category: 'ACTION',
+    title: 'Category & UoM Management Taxonomy',
+    subtitle: 'Manage enterprise product categories, valuation metrics, and unit conversions',
+    badge: 'Cat',
+    icon: Boxes,
+    action: () => {
+      onNavigateTab('categories');
+      onClose();
+    },
+  });
+
+  commandItems.push({
+    id: 'act-physical-count',
+    category: 'ACTION',
+    title: 'Physical Quantity Adjustment & Cycle Count Engine',
+    subtitle: 'Post blind physical counts, calculate variance, and atomically adjust ledger',
+    badge: 'Audit',
+    icon: Layers,
+    action: () => {
+      onNavigateTab('physical-count');
+      onClose();
+    },
+  });
+
+  commandItems.push({
+    id: 'act-reports',
+    category: 'ACTION',
+    title: 'Warehouse Intelligence & Executive Reports',
+    subtitle: 'Valuation breakdown, stockout risk analysis, bay occupancy, and Prisma schema',
+    badge: 'Reports',
+    icon: FileText,
+    action: () => {
+      onNavigateTab('reports');
       onClose();
     },
   });

@@ -21,14 +21,25 @@ import {
   Search,
   Maximize2,
   ExternalLink,
+  Warehouse,
+  Building2,
+  Settings,
+  MapPin,
+  Thermometer,
 } from 'lucide-react';
 import { ProductDTO, LocationDTO } from '../services/api';
+import { WarehouseDirectoryView } from './WarehouseDirectoryView';
+import { CreateWarehouseModal } from './CreateWarehouseModal';
+import { EditWarehouseModal } from './EditWarehouseModal';
+import { WarehouseZonesModal } from './WarehouseZonesModal';
 
 interface WarehouseBayViewProps {
   products: ProductDTO[];
   locations: LocationDTO[];
   onOpenProductDrawer: (product: ProductDTO) => void;
   onOpenTransferDrawer: (sourceRack?: string) => void;
+  onRefreshLocations?: () => void;
+  initialViewMode?: 'directory' | 'topology';
 }
 
 interface RackSlot {
@@ -47,15 +58,35 @@ export const WarehouseBayView: React.FC<WarehouseBayViewProps> = ({
   locations,
   onOpenProductDrawer,
   onOpenTransferDrawer,
+  onRefreshLocations,
+  initialViewMode = 'directory',
 }) => {
-  // Warehouse Tabs
+  const [viewMode, setViewMode] = useState<'directory' | 'topology'>(initialViewMode);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [editLocationTarget, setEditLocationTarget] = useState<LocationDTO | null>(null);
+  const [zonesLocationTarget, setZonesLocationTarget] = useState<LocationDTO | null>(null);
+
+  // Dynamic Warehouse Tabs from Database
   const [activeWarehouse, setActiveWarehouse] = useState<number>(0);
-  const warehouses = [
-    { id: 0, name: 'Warehouse 1', label: 'NEOM Bay Smart Hub', code: 'WH-01' },
-    { id: 1, name: 'Warehouse 2', label: 'Oxagon Maritime Port', code: 'WH-02' },
-    { id: 2, name: 'Warehouse 3', label: 'The Line Automated Spine', code: 'WH-03' },
-    { id: 3, name: 'Warehouse 4', label: 'Trojena Cold Logistics', code: 'WH-04' },
-  ];
+
+  const warehouses = useMemo(() => {
+    if (locations && locations.length > 0) {
+      return locations.map((loc, idx) => ({
+        id: idx,
+        locId: loc.id,
+        name: loc.name,
+        code: loc.code,
+        label: `${loc.city} • ${loc.name}`,
+        raw: loc,
+      }));
+    }
+    return [
+      { id: 0, locId: 'loc-neom-bay-01', name: 'NEOM Bay Smart Hub', code: 'WH-01', label: 'NEOM Bay Smart Hub', raw: undefined },
+      { id: 1, locId: 'loc-neom-oxa-02', name: 'Oxagon Maritime Port', code: 'WH-02', label: 'Oxagon Maritime Port', raw: undefined },
+      { id: 2, locId: 'loc-neom-lin-03', name: 'The Line Automated Spine', code: 'WH-03', label: 'The Line Automated Spine', raw: undefined },
+      { id: 3, locId: 'loc-neom-tro-04', name: 'Trojena Cold Logistics', code: 'WH-04', label: 'Trojena Cold Logistics', raw: undefined },
+    ];
+  }, [locations]);
 
   // Selected Rack Bay / Section
   const [selectedSection, setSelectedSection] = useState<'A' | 'B' | 'C' | 'D'>('B');
@@ -194,95 +225,212 @@ export const WarehouseBayView: React.FC<WarehouseBayViewProps> = ({
   const endIndex = Math.min(totalRows, Math.floor((scrollTop + containerHeight) / rowHeight) + 10);
   const visibleRows = filteredRows.slice(startIndex, endIndex);
 
+  const activeWh = warehouses[activeWarehouse] || warehouses[0];
+  const activeLocation = activeWh?.raw || locations.find((l) => l.id === activeWh?.locId) || locations[0];
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
-      {/* Top Header: "Warehouses (8)" matching reference image */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      {/* Top Header & View Mode Switcher */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-[#152836] tracking-tight">
-            Warehouses (8)
-          </h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-[#152836] tracking-tight">
+              Warehouses & Locations ({locations.length || warehouses.length})
+            </h1>
+            <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-bold">
+              {locations.filter((l) => l.active !== false).length} Active Hubs
+            </span>
+          </div>
           <p className="text-xs text-[#7a8b99] mt-0.5">
-            NEOM Smart Logistics Grid • Real-time Bay & Rack Topology
+            NEOM Smart Logistics Network • Facility Management, Zones & High-Density Bay Topology
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => {
-              setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-            }}
-            className="flex items-center gap-2 px-3.5 py-2 bg-white hover:bg-[#faf9f6] border border-[#e4dfd3] rounded-xl text-xs font-semibold text-[#152836] shadow-xs transition cursor-pointer"
-          >
-            <ArrowUpDown className="w-3.5 h-3.5 text-[#7a8b99]" />
-            <span>Sort by</span>
-          </button>
+        {/* View Mode Switcher and Primary Actions */}
+        <div className="flex items-center flex-wrap gap-2.5">
+          <div className="flex items-center bg-[#ede9df] p-1 rounded-xl border border-[#ded8cb]">
+            <button
+              onClick={() => setViewMode('directory')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                viewMode === 'directory'
+                  ? 'bg-white text-[#152836] shadow-2xs'
+                  : 'text-[#7a8b99] hover:text-[#152836]'
+              }`}
+            >
+              <Building2 className="w-3.5 h-3.5 text-[#e5a329]" />
+              <span>Facility Directory & Settings</span>
+            </button>
+            <button
+              onClick={() => setViewMode('topology')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                viewMode === 'topology'
+                  ? 'bg-white text-[#152836] shadow-2xs'
+                  : 'text-[#7a8b99] hover:text-[#152836]'
+              }`}
+            >
+              <Warehouse className="w-3.5 h-3.5 text-[#e5a329]" />
+              <span>Interactive Bay Topology</span>
+            </button>
+          </div>
 
           <button
-            onClick={() => setTableSearch(tableSearch ? '' : 'VALVE')}
-            className="flex items-center gap-2 px-3.5 py-2 bg-white hover:bg-[#faf9f6] border border-[#e4dfd3] rounded-xl text-xs font-semibold text-[#152836] shadow-xs transition cursor-pointer"
+            onClick={() => setIsCreateModalOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-[#122b39] hover:bg-[#1a3d52] text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
           >
-            <SlidersHorizontal className="w-3.5 h-3.5 text-[#7a8b99]" />
-            <span>Filter by (4)</span>
+            <Plus className="w-3.5 h-3.5 text-[#e5a329]" />
+            <span>Create Warehouse</span>
           </button>
 
           <button
             onClick={() => onOpenTransferDrawer()}
-            className="flex items-center gap-2 px-4 py-2 bg-[#132f3e] hover:bg-[#1a3d52] text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
+            className="flex items-center gap-2 px-3.5 py-2 bg-white hover:bg-[#faf9f6] border border-[#ded8cb] text-[#152836] rounded-xl text-xs font-semibold shadow-2xs transition cursor-pointer"
           >
-            <Plus className="w-3.5 h-3.5 text-[#e5a329]" />
+            <ArrowRight className="w-3.5 h-3.5 text-[#7a8b99]" />
             <span>New Transfer</span>
           </button>
         </div>
       </div>
 
-      {/* Horizontal Warehouse Pills Selector matching reference image */}
-      <div className="flex items-center justify-between gap-3 overflow-x-auto pb-1">
-        <div className="flex items-center gap-2.5">
-          {warehouses.map((wh, index) => {
-            const isActive = activeWarehouse === wh.id;
-            return (
+      {/* VIEW MODE: DIRECTORY & FACILITY SETTINGS */}
+      {viewMode === 'directory' && (
+        <WarehouseDirectoryView
+          locations={locations}
+          products={products}
+          onSelectWarehouseForTopology={(loc) => {
+            const idx = warehouses.findIndex((w) => w.locId === loc.id || w.code === loc.code);
+            if (idx !== -1) setActiveWarehouse(idx);
+            setViewMode('topology');
+          }}
+          onOpenCreateModal={() => setIsCreateModalOpen(true)}
+          onOpenEditModal={(loc) => setEditLocationTarget(loc)}
+          onOpenZonesModal={(loc) => setZonesLocationTarget(loc)}
+          onRefresh={() => onRefreshLocations?.()}
+        />
+      )}
+
+      {/* VIEW MODE: INTERACTIVE BAY TOPOLOGY */}
+      {viewMode === 'topology' && (
+        <div className="space-y-6">
+          {/* Horizontal Warehouse Pills Selector matching reference image */}
+          <div className="flex items-center justify-between gap-3 overflow-x-auto pb-1">
+            <div className="flex items-center gap-2.5">
+              {warehouses.map((wh) => {
+                const isActive = activeWarehouse === wh.id;
+                return (
+                  <button
+                    key={wh.id}
+                    onClick={() => setActiveWarehouse(wh.id)}
+                    className={`px-5 py-2 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
+                      isActive
+                        ? 'bg-[#132f3e] text-white shadow-sm'
+                        : 'bg-[#ede9df]/80 hover:bg-[#e3ded2] text-[#3b4c58]'
+                    }`}
+                  >
+                    {wh.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Carousel arrows + plus button */}
+            <div className="flex items-center gap-2 shrink-0">
               <button
-                key={wh.id}
-                onClick={() => setActiveWarehouse(wh.id)}
-                className={`px-5 py-2 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
-                  isActive
-                    ? 'bg-[#132f3e] text-white shadow-sm'
-                    : 'bg-[#ede9df]/80 hover:bg-[#e3ded2] text-[#3b4c58]'
-                }`}
+                onClick={() => setActiveWarehouse((prev) => (prev > 0 ? prev - 1 : warehouses.length - 1))}
+                className="w-9 h-9 rounded-xl bg-[#ede9df]/80 hover:bg-[#e3ded2] text-[#3b4c58] flex items-center justify-center transition cursor-pointer"
               >
-                {wh.name}
+                <ChevronLeft className="w-4 h-4" />
               </button>
-            );
-          })}
-        </div>
+              <button
+                onClick={() => setActiveWarehouse((prev) => (prev < warehouses.length - 1 ? prev + 1 : 0))}
+                className="w-9 h-9 rounded-xl bg-[#ede9df]/80 hover:bg-[#e3ded2] text-[#3b4c58] flex items-center justify-center transition cursor-pointer"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setIsCreateModalOpen(true)}
+                className="w-9 h-9 rounded-xl bg-[#132f3e] hover:bg-[#1a3d52] text-white flex items-center justify-center transition cursor-pointer shadow-xs"
+                title="Create New Warehouse"
+              >
+                <Plus className="w-4 h-4 text-[#e5a329]" />
+              </button>
+            </div>
+          </div>
 
-        {/* Carousel arrows + plus button matching reference image */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => setActiveWarehouse((prev) => (prev > 0 ? prev - 1 : warehouses.length - 1))}
-            className="w-9 h-9 rounded-xl bg-[#ede9df]/80 hover:bg-[#e3ded2] text-[#3b4c58] flex items-center justify-center transition cursor-pointer"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => setActiveWarehouse((prev) => (prev < warehouses.length - 1 ? prev + 1 : 0))}
-            className="w-9 h-9 rounded-xl bg-[#ede9df]/80 hover:bg-[#e3ded2] text-[#3b4c58] flex items-center justify-center transition cursor-pointer"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => onOpenTransferDrawer()}
-            className="w-9 h-9 rounded-xl bg-[#132f3e] hover:bg-[#1a3d52] text-white flex items-center justify-center transition cursor-pointer shadow-xs"
-            title="Add Warehouse Depot / Rack"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
+          {/* Active Facility Profile & Settings Strip */}
+          <div className="bg-white border border-[#e5e1d5] rounded-2xl p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4 shadow-2xs">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-[#122b39] text-white flex items-center justify-center font-bold font-mono text-xs shadow-xs">
+                {activeLocation?.code || activeWh.code}
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-bold text-[#152836]">
+                    {activeLocation?.name || activeWh.name}
+                  </h2>
+                  <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-blue-50 border border-blue-200 text-blue-800">
+                    {activeLocation?.type || 'WAREHOUSE'}
+                  </span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200">
+                    ONLINE
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 text-xs text-[#7a8b99] mt-0.5">
+                  <span className="flex items-center gap-1">
+                    <MapPin className="w-3 h-3 text-[#e5a329]" />
+                    <span>{activeLocation?.city || 'NEOM Region'} • {activeLocation?.address || 'Logistics Zone'}</span>
+                  </span>
+                  <span>•</span>
+                  <span className="flex items-center gap-1">
+                    <Thermometer className="w-3 h-3 text-[#e5a329]" />
+                    <span>{activeLocation?.temperatureZone || 'Ambient Controlled (20-24°C)'}</span>
+                  </span>
+                </div>
+              </div>
+            </div>
 
-      {/* STRICT 12-COLUMN CSS GRID WITH 24PX GUTTERS */}
-      <div className="grid grid-cols-12 gap-6">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setEditLocationTarget(activeLocation || null)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#f6f4ed] hover:bg-[#eae6dc] text-[#152836] rounded-xl text-xs font-bold border border-[#ded8cb] transition cursor-pointer"
+              >
+                <Settings className="w-3.5 h-3.5 text-[#7a8b99]" />
+                <span>Facility Settings</span>
+              </button>
+              <button
+                onClick={() => setZonesLocationTarget(activeLocation || null)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#f6f4ed] hover:bg-[#eae6dc] text-[#152836] rounded-xl text-xs font-bold border border-[#ded8cb] transition cursor-pointer"
+              >
+                <Layers className="w-3.5 h-3.5 text-[#7a8b99]" />
+                <span>Configure Zones ({activeLocation?.zones?.length || 4})</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Controls Bar for 2D Grid */}
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-bold text-[#7a8b99] uppercase tracking-wider">
+              Visual 2D Rack Bays & High-Density Inventory
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                className="flex items-center gap-2 px-3 py-1.5 bg-white hover:bg-[#faf9f6] border border-[#e4dfd3] rounded-xl text-xs font-semibold text-[#152836] shadow-2xs transition cursor-pointer"
+              >
+                <ArrowUpDown className="w-3.5 h-3.5 text-[#7a8b99]" />
+                <span>Sort ({sortOrder})</span>
+              </button>
+              <button
+                onClick={() => setTableSearch(tableSearch ? '' : 'VALVE')}
+                className="flex items-center gap-2 px-3 py-1.5 bg-white hover:bg-[#faf9f6] border border-[#e4dfd3] rounded-xl text-xs font-semibold text-[#152836] shadow-2xs transition cursor-pointer"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5 text-[#7a8b99]" />
+                <span>{tableSearch ? 'Clear Filter' : 'Filter Valves'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* STRICT 12-COLUMN CSS GRID WITH 24PX GUTTERS */}
+          <div className="grid grid-cols-12 gap-6">
         {/* LEFT COLUMN: Section Overview (20) and Virtualized Grid (8 COLUMNS) */}
         <div className="col-span-12 lg:col-span-8 space-y-6">
           {/* Card: Section Overview (20) matching reference image layout */}
@@ -835,6 +983,37 @@ export const WarehouseBayView: React.FC<WarehouseBayViewProps> = ({
           </div>
         </div>
       </div>
+    </div>
+  )}
+
+      {/* Create Warehouse Modal */}
+      <CreateWarehouseModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        onSuccess={(newLoc) => {
+          onRefreshLocations?.();
+        }}
+      />
+
+      {/* Edit Warehouse Modal */}
+      <EditWarehouseModal
+        isOpen={Boolean(editLocationTarget)}
+        location={editLocationTarget}
+        onClose={() => setEditLocationTarget(null)}
+        onSuccess={(updated) => {
+          onRefreshLocations?.();
+        }}
+      />
+
+      {/* Zone Configuration Modal */}
+      <WarehouseZonesModal
+        isOpen={Boolean(zonesLocationTarget)}
+        location={zonesLocationTarget}
+        onClose={() => setZonesLocationTarget(null)}
+        onSuccess={(updated) => {
+          onRefreshLocations?.();
+        }}
+      />
     </div>
   );
 };

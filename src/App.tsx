@@ -10,9 +10,9 @@ import { BlindReceivingView } from './components/BlindReceivingView';
 import { StockOperationsView } from './components/StockOperationsView';
 import { WesWavePickingView } from './components/WesWavePickingView';
 import { DemandPlanningView } from './components/DemandPlanningView';
-import { OmniChannelPosView } from './components/OmniChannelPosView';
-import { ManufacturingBomView } from './components/ManufacturingBomView';
-import { PrismaSchemaViewer } from './components/PrismaSchemaViewer';
+import { CategoryManagementView } from './components/CategoryManagementView';
+import { PhysicalAdjustmentView } from './components/PhysicalAdjustmentView';
+import { ReportsAndIntelligenceView } from './components/ReportsAndIntelligenceView';
 import { LoginPage } from './components/LoginPage';
 import { ActiveTab } from './components/Navigation';
 import {
@@ -269,6 +269,7 @@ export default function App() {
               locations={locations}
               onOpenProductDrawer={handleOpenProductDrawer}
               onOpenTransferDrawer={handleOpenTransferDrawer}
+              onRefreshLocations={() => fetchAllData(true)}
             />
           )}
 
@@ -289,6 +290,13 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'categories' && (
+            <CategoryManagementView
+              products={products}
+              onRefreshProducts={() => fetchAllData(true)}
+            />
+          )}
+
           {activeTab === 'blind-receiving' && (
             <BlindReceivingView
               currentUser={currentUser}
@@ -306,6 +314,14 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'physical-count' && (
+            <PhysicalAdjustmentView
+              products={products}
+              locations={locations}
+              onAdjustmentCommitted={() => fetchAllData(true)}
+            />
+          )}
+
           {activeTab === 'wes-picking' && (
             <WesWavePickingView
               waves={waves}
@@ -319,23 +335,13 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'omni-channel-pos' && (
-            <OmniChannelPosView
+          {(activeTab === 'reports' || activeTab === 'schema-viewer') && (
+            <ReportsAndIntelligenceView
               products={products}
               locations={locations}
-              orders={orders}
-              onOperationSuccess={() => fetchAllData(true)}
+              movements={movements}
             />
           )}
-
-          {activeTab === 'manufacturing' && (
-            <ManufacturingBomView
-              locations={locations}
-              onOperationSuccess={() => fetchAllData(true)}
-            />
-          )}
-
-          {activeTab === 'schema-viewer' && <PrismaSchemaViewer />}
         </main>
 
         {/* Enterprise System Footer */}

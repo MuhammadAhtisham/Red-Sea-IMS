@@ -47,6 +47,18 @@ export interface DatabaseInstanceDTO {
   locationCount: number;
 }
 
+export interface CategoryDTO {
+  id: string;
+  name: string;
+  code: string;
+  description?: string;
+  color?: string;
+  productCount?: number;
+  totalUnits?: number;
+  totalValuation?: number;
+  productIds?: string[];
+}
+
 export interface UoMCategoryDTO {
   id: string;
   name: string;
@@ -117,6 +129,12 @@ export interface ProductDTO {
   moq?: number;
   packagings?: ProductPackagingDTO[];
   variants?: ProductVariantDTO[];
+  weight?: number;
+  dimensions?: string;
+  storageCondition?: string;
+  brand?: string;
+  countryOfOrigin?: string;
+  maxCapacity?: number;
   totalStock: number;
   stockByLocation: {
     locationId: string;
@@ -150,6 +168,12 @@ export interface CreateProductInput {
   moq?: number;
   packagings?: ProductPackagingDTO[];
   variants?: ProductVariantDTO[];
+  weight?: number;
+  dimensions?: string;
+  storageCondition?: string;
+  brand?: string;
+  countryOfOrigin?: string;
+  maxCapacity?: number;
 }
 
 export interface PurchaseOrderLineDTO {
@@ -223,7 +247,7 @@ export interface LocationDTO {
   id: string;
   name: string;
   code: string;
-  type: 'WAREHOUSE' | 'STOREFRONT';
+  type: 'WAREHOUSE' | 'STOREFRONT' | 'QUARANTINE' | 'TRANSIT_HUB' | 'STORE';
   address: string;
   city: string;
   state: string;
@@ -231,6 +255,16 @@ export interface LocationDTO {
   latitude: number;
   longitude: number;
   active: boolean;
+  nominalCapacity?: number;
+  totalUnits?: number;
+  skuCount?: number;
+  utilizationRate?: number;
+  zones?: string[];
+  temperatureZone?: string;
+  managerName?: string;
+  contactPhone?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface StockLevelDTO {
@@ -757,6 +791,266 @@ export const api = {
     receipt: GoodsReceiptDTO;
   }> => {
     const { data } = await apiClient.post('/receiving/resolve-variance', payload);
+    return data;
+  },
+
+  // 14. Product Category Management
+  getCategories: async (): Promise<CategoryDTO[]> => {
+    const { data } = await apiClient.get<CategoryDTO[]>('/categories');
+    return data;
+  },
+
+  createCategory: async (payload: {
+    name: string;
+    code: string;
+    description?: string;
+    color?: string;
+  }): Promise<CategoryDTO> => {
+    const { data } = await apiClient.post<CategoryDTO>('/categories', payload);
+    return data;
+  },
+
+  updateCategory: async (id: string, payload: Partial<CategoryDTO>): Promise<CategoryDTO> => {
+    const { data } = await apiClient.put<CategoryDTO>(`/categories/${id}`, payload);
+    return data;
+  },
+
+  deleteCategory: async (id: string): Promise<{ message: string }> => {
+    const { data } = await apiClient.delete<{ message: string }>(`/categories/${id}`);
+    return data;
+  },
+
+  deleteUom: async (id: string): Promise<{ message: string }> => {
+    const { data } = await apiClient.delete<{ message: string }>(`/uom/units/${id}`);
+    return data;
+  },
+
+  // 15. Physical Quantity Adjustment & Audit Engine
+  postPhysicalCount: async (payload: {
+    locationId: string;
+    reason?: string;
+    notes?: string;
+    userId?: string;
+    adjustments: {
+      productId: string;
+      systemQty: number;
+      countedQty: number;
+      notes?: string;
+    }[];
+  }): Promise<{
+    success: boolean;
+    message: string;
+    reference: string;
+    adjustedCount: number;
+    results: any[];
+  }> => {
+    const { data } = await apiClient.post('/stock/physical-count/post', payload);
+    return data;
+  },
+
+  // 16. Batch Operations Import & Execution Engine
+  executeBatchOperations: async (payload: {
+    userId?: string;
+    operations: {
+      type: 'TRANSFER' | 'RECEIPT' | 'SCRAP' | 'ISSUE' | 'ADJUSTMENT';
+      productId: string;
+      fromLocationId?: string;
+      toLocationId?: string;
+      locationId?: string;
+      quantity: number;
+      quantityDelta?: number;
+      reference?: string;
+      notes?: string;
+    }[];
+  }): Promise<{
+    success: boolean;
+    message: string;
+    executedCount: number;
+    results: any[];
+  }> => {
+    const { data } = await apiClient.post('/stock/batch-operations', payload);
+    return data;
+  },
+
+  // 17. Extended Operations & Full Backend Services
+  registerUser: async (payload: {
+    name: string;
+    email: string;
+    role?: 'ADMIN' | 'MANAGER' | 'STAFF';
+    jobTitle?: string;
+    badgeCode?: string;
+  }): Promise<{ success: boolean; message: string; user: UserDTO }> => {
+    const { data } = await apiClient.post('/auth/register', payload);
+    return data;
+  },
+
+  resetDatabaseToSeed: async (): Promise<{
+    success: boolean;
+    message: string;
+    currentDatabaseId: string;
+    instances: DatabaseInstanceDTO[];
+  }> => {
+    const { data } = await apiClient.post('/database/reset-seed');
+    return data;
+  },
+
+  getValuationReport: async (): Promise<{
+    summary: {
+      totalSkus: number;
+      totalUnits: number;
+      totalCostValuation: number;
+      totalRetailValuation: number;
+      potentialProfit: number;
+      aggregateMarginPct: number;
+    };
+    skuBreakdown: any[];
+  }> => {
+    const { data } = await apiClient.get('/reports/valuation');
+    return data;
+  },
+
+  getReorderAlertsReport: async (): Promise<{
+    summary: {
+      criticalCount: number;
+      warningCount: number;
+      healthyCount: number;
+      totalEvaluated: number;
+    };
+    alerts: SkuVelocityDTO[];
+  }> => {
+    const { data } = await apiClient.get('/reports/reorder-alerts');
+    return data;
+  },
+
+  getBayUtilizationReport: async (): Promise<any[]> => {
+    const { data } = await apiClient.get('/reports/bay-utilization');
+    return data;
+  },
+
+  getMovementsSummaryReport: async (): Promise<any> => {
+    const { data } = await apiClient.get('/reports/movements-summary');
+    return data;
+  },
+
+  getSystemMetrics: async (): Promise<any> => {
+    const { data } = await apiClient.get('/system/metrics');
+    return data;
+  },
+
+  getProductById: async (id: string): Promise<ProductDTO> => {
+    const { data } = await apiClient.get<ProductDTO>(`/products/${id}`);
+    return data;
+  },
+
+  deleteProduct: async (id: string): Promise<{ success: boolean; message: string; deletedProductId: string }> => {
+    const { data } = await apiClient.delete(`/products/${id}`);
+    return data;
+  },
+
+  bulkImportProducts: async (products: any[]): Promise<{
+    success: boolean;
+    message: string;
+    inserted: number;
+    updated: number;
+    totalCatalogCount: number;
+  }> => {
+    const { data } = await apiClient.post('/products/bulk', { products });
+    return data;
+  },
+
+  getCategoryById: async (id: string): Promise<CategoryDTO & { products: ProductDTO[] }> => {
+    const { data } = await apiClient.get(`/categories/${id}`);
+    return data;
+  },
+
+  createUomCategory: async (payload: { name: string; code: string; description?: string }): Promise<UoMCategoryDTO> => {
+    const { data } = await apiClient.post<UoMCategoryDTO>('/uom/categories', payload);
+    return data;
+  },
+
+  updateUom: async (id: string, payload: Partial<UoMDTO>): Promise<UoMDTO> => {
+    const { data } = await apiClient.put<UoMDTO>(`/uom/units/${id}`, payload);
+    return data;
+  },
+
+  getLocationById: async (id: string): Promise<LocationDTO & { totalUnits: number; skuCount: number; inventory: any[] }> => {
+    const { data } = await apiClient.get(`/locations/${id}`);
+    return data;
+  },
+
+  createLocation: async (payload: Partial<LocationDTO>): Promise<{ success: boolean; message: string; location: LocationDTO }> => {
+    const { data } = await apiClient.post('/locations', payload);
+    return data;
+  },
+
+  updateLocation: async (id: string, payload: Partial<LocationDTO>): Promise<LocationDTO> => {
+    const { data } = await apiClient.put<LocationDTO>(`/locations/${id}`, payload);
+    return data;
+  },
+
+  deleteLocation: async (id: string): Promise<{ success: boolean; message: string }> => {
+    const { data } = await apiClient.delete(`/locations/${id}`);
+    return data;
+  },
+
+  getLocationBays: async (id: string): Promise<any> => {
+    const { data } = await apiClient.get(`/locations/${id}/bays`);
+    return data;
+  },
+
+  getOrderById: async (id: string): Promise<OrderDTO> => {
+    const { data } = await apiClient.get<OrderDTO>(`/orders/${id}`);
+    return data;
+  },
+
+  updateOrderStatus: async (id: string, status: string): Promise<{ success: boolean; order: OrderDTO }> => {
+    const { data } = await apiClient.post(`/orders/${id}/status`, { status });
+    return data;
+  },
+
+  syncChannel: async (id: string): Promise<{ success: boolean; message: string; channel: ChannelSyncDTO }> => {
+    const { data } = await apiClient.post(`/channels/${id}/sync`);
+    return data;
+  },
+
+  getPurchaseOrderById: async (id: string): Promise<PurchaseOrderDTO> => {
+    const { data } = await apiClient.get<PurchaseOrderDTO>(`/purchase-orders/${id}`);
+    return data;
+  },
+
+  createPurchaseOrder: async (payload: {
+    supplier: string;
+    locationId: string;
+    items: { productId: string; quantity: number; unitCost?: number }[];
+    notes?: string;
+  }): Promise<{ success: boolean; message: string; purchaseOrder: PurchaseOrderDTO }> => {
+    const { data } = await apiClient.post('/purchase-orders', payload);
+    return data;
+  },
+
+  cancelPurchaseOrder: async (id: string): Promise<{ message: string; purchaseOrder: PurchaseOrderDTO }> => {
+    const { data } = await apiClient.post(`/purchase-orders/${id}/cancel`);
+    return data;
+  },
+
+  createBom: async (payload: {
+    bomCode: string;
+    name?: string;
+    finishedGoodId: string;
+    finishedQuantity: number;
+    items: { componentProductId: string; quantityRequired: number }[];
+  }): Promise<{ success: boolean; message: string; bom: BillOfMaterialsDTO }> => {
+    const { data } = await apiClient.post('/manufacturing/boms', payload);
+    return data;
+  },
+
+  createPallet: async (payload: {
+    lpnCode: string;
+    locationId: string;
+    binId?: string;
+    items: { productId: string; quantity: number }[];
+  }): Promise<{ success: boolean; message: string; pallet: PalletDTO }> => {
+    const { data } = await apiClient.post('/pallets', payload);
     return data;
   },
 };

@@ -14,9 +14,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Boxes,
-  Factory,
   BrainCircuit,
   Database,
+  Tag,
+  ClipboardCheck,
 } from 'lucide-react';
 import { ActiveTab } from './Navigation';
 
@@ -53,16 +54,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'warehouses',
-      label: 'Warehouses',
+      label: 'Warehouses & Locations',
       icon: Warehouse,
-      badge: '8 Active',
-      badgeColor: 'bg-[#122b39] text-[#e5a329]',
+      badge: 'Manage',
+      badgeColor: 'bg-[#1b3d52] text-[#e5a329]',
     },
     {
       id: 'products',
       label: 'Product Master',
       icon: Boxes,
       badge: '4-Tier UoM',
+    },
+    {
+      id: 'categories',
+      label: 'Categories & UoM',
+      icon: Tag,
+      badge: 'Taxonomy',
+      badgeColor: 'bg-[#1b3d52] text-[#e5a329]',
     },
     {
       id: 'blind-receiving',
@@ -75,6 +83,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'stock-ops',
       label: 'Inventory Ops',
       icon: Layers,
+    },
+    {
+      id: 'physical-count',
+      label: 'Physical Adjustment',
+      icon: ClipboardCheck,
+      badge: 'Cycle Count',
+      badgeColor: 'bg-emerald-950 text-emerald-300',
     },
     {
       id: 'wes-picking',
@@ -90,19 +105,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badgeColor: 'bg-purple-900 text-purple-200',
     },
     {
-      id: 'omni-channel-pos',
-      label: 'Orders & POS',
-      icon: Package,
-    },
-    {
-      id: 'manufacturing',
-      label: 'BOM & Manufacturing',
-      icon: Factory,
-    },
-    {
-      id: 'schema-viewer',
-      label: 'Prisma & Reports',
+      id: 'reports',
+      label: 'Reports & Analytics',
       icon: FileSpreadsheet,
+      badge: 'Executive',
+      badgeColor: 'bg-[#1b3e54] text-[#e5a329]',
     },
   ];
 

@@ -13,7 +13,7 @@ import {
   optimizePickingPath,
   processScannerStream,
 } from './server/wes.js';
-import { Wave } from './server/types.js';
+import { Wave, PurchaseOrder, BillOfMaterials, Pallet } from './server/types.js';
 import { ReceivingEngine } from './server/receivingEngine.js';
 
 const app = express();
@@ -54,6 +54,43 @@ app.post('/api/auth/login', (req, res) => {
     token: `jwt-mock-${user.id}`,
     activeDatabase: db.currentDatabaseId,
   });
+});
+
+app.post('/api/auth/register', (req, res) => {
+  try {
+    const { name, email, role, jobTitle, badgeCode } = req.body;
+    if (!name || !email) {
+      res.status(400).json({ error: 'Name and email are mandatory.' });
+      return;
+    }
+
+    const existing = db.users.find((u) => u.email.toLowerCase() === email.toLowerCase().trim());
+    if (existing) {
+      res.status(400).json({ error: `User with email "${email}" already exists.` });
+      return;
+    }
+
+    const newUser = {
+      id: `usr-${Date.now().toString().slice(-6)}`,
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      role: (role || 'STAFF') as 'ADMIN' | 'MANAGER' | 'STAFF',
+      jobTitle: jobTitle || 'Logistics Operator',
+      badgeCode: badgeCode ? badgeCode.trim() : `NEOM-USR-${Date.now().toString().slice(-4)}`,
+      createdAt: new Date().toISOString(),
+    };
+
+    db.users.push(newUser);
+    db.saveToDisk();
+
+    res.status(201).json({
+      success: true,
+      message: `User "${newUser.name}" registered successfully.`,
+      user: newUser,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/database/instances', (req, res) => {
@@ -105,6 +142,20 @@ app.post('/api/database/neutralize', (req, res) => {
     });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/database/reset-seed', (req, res) => {
+  try {
+    db.resetToFactorySeed();
+    res.json({
+      success: true,
+      message: 'Active database reset to original RedSea IMS factory seed data.',
+      currentDatabaseId: db.currentDatabaseId,
+      instances: db.getDatabaseInstances(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -160,6 +211,185 @@ app.get('/api/dashboard/stats', (req, res) => {
       activeWorkOrders,
       activeWaves,
       draftPurchaseOrdersCount: db.purchaseOrders.filter((po) => po.status === 'DRAFT').length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Specialized Enterprise Reporting Endpoints
+app.get('/api/reports/valuation', (req, res) => {
+  try {
+    let totalCostValuation = 0;
+    let totalRetailValuation = 0;
+    let totalUnits = 0;
+
+    const skuBreakdown = db.products.map((p) => {
+      const stockLevels = db.stockLevels.filter((sl) => sl.productId === p.id);
+      const units = stockLevels.reduce((sum, sl) => sum + sl.quantity, 0);
+      const costValuation = units * (p.unitCost || 0);
+      const retailValuation = units * (p.retailPrice || 0);
+      const grossMarginPct =
+        p.retailPrice > 0 ? Math.round(((p.retailPrice - p.unitCost) / p.retailPrice) * 1000) / 10 : 0;
+
+      totalCostValuation += costValuation;
+      totalRetailValuation += retailValuation;
+      totalUnits += units;
+
+      return {
+        id: p.id,
+        sku: p.sku,
+        name: p.name,
+        category: p.category || 'General',
+        uom: p.unitOfMeasure || 'EA',
+        units,
+        unitCost: p.unitCost,
+        retailPrice: p.retailPrice,
+        costValuation: Math.round(costValuation * 100) / 100,
+        retailValuation: Math.round(retailValuation * 100) / 100,
+        grossMarginPct,
+      };
+    });
+
+    const aggregateMarginPct =
+      totalRetailValuation > 0
+        ? Math.round(((totalRetailValuation - totalCostValuation) / totalRetailValuation) * 1000) / 10
+        : 0;
+
+    res.json({
+      summary: {
+        totalSkus: db.products.length,
+        totalUnits,
+        totalCostValuation: Math.round(totalCostValuation * 100) / 100,
+        totalRetailValuation: Math.round(totalRetailValuation * 100) / 100,
+        potentialProfit: Math.round((totalRetailValuation - totalCostValuation) * 100) / 100,
+        aggregateMarginPct,
+      },
+      skuBreakdown,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/reports/reorder-alerts', (req, res) => {
+  try {
+    const velocities = calculateSkuVelocities();
+    const critical = velocities.filter((v) => v.urgency === 'CRITICAL');
+    const warning = velocities.filter((v) => v.urgency === 'WARNING');
+    const healthy = velocities.filter((v) => v.urgency === 'HEALTHY');
+
+    res.json({
+      summary: {
+        criticalCount: critical.length,
+        warningCount: warning.length,
+        healthyCount: healthy.length,
+        totalEvaluated: velocities.length,
+      },
+      alerts: velocities,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/reports/bay-utilization', (req, res) => {
+  try {
+    const facilityData = db.locations.map((loc) => {
+      const facilityStock = db.stockLevels.filter((sl) => sl.locationId === loc.id);
+      const totalUnits = facilityStock.reduce((acc, s) => acc + s.quantity, 0);
+      const uniqueSkus = new Set(facilityStock.filter((s) => s.quantity > 0).map((s) => s.productId)).size;
+
+      // Simulated capacity based on facility type
+      const nominalCapacity = loc.type === 'WAREHOUSE' ? 12000 : loc.type === 'STOREFRONT' || (loc.type as string) === 'STORE' ? 2500 : 8000;
+      const utilizationRate = Math.min(100, Math.round((totalUnits / nominalCapacity) * 1000) / 10);
+
+      return {
+        locationId: loc.id,
+        name: loc.name,
+        code: loc.code,
+        type: loc.type,
+        city: loc.city,
+        totalUnits,
+        uniqueSkus,
+        nominalCapacity,
+        utilizationRate,
+        status: utilizationRate > 90 ? 'SATURATED' : utilizationRate > 65 ? 'OPTIMAL' : 'UNDERUTILIZED',
+      };
+    });
+
+    res.json(facilityData);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/reports/movements-summary', (req, res) => {
+  try {
+    const totalMovements = db.stockMovements.length;
+    const receipts = db.stockMovements.filter((m) => m.type === 'RECEIPT');
+    const transfers = db.stockMovements.filter((m) => m.type === 'TRANSFER');
+    const adjustments = db.stockMovements.filter((m) => m.type === 'ADJUSTMENT');
+    const sales = db.stockMovements.filter((m) => m.type === 'SALE');
+
+    res.json({
+      totalMovements,
+      receipts: {
+        count: receipts.length,
+        volume: receipts.reduce((sum, m) => sum + m.quantity, 0),
+      },
+      transfers: {
+        count: transfers.length,
+        volume: transfers.reduce((sum, m) => sum + m.quantity, 0),
+      },
+      adjustments: {
+        count: adjustments.length,
+        volume: adjustments.reduce((sum, m) => sum + m.quantity, 0),
+      },
+      sales: {
+        count: sales.length,
+        volume: sales.reduce((sum, m) => sum + m.quantity, 0),
+      },
+      recentLedger: db.stockMovements.slice(0, 25).map((m) => {
+        const prod = db.products.find((p) => p.id === m.productId);
+        return {
+          ...m,
+          productSku: prod ? prod.sku : 'UNKNOWN',
+          productName: prod ? prod.name : 'Unknown Product',
+        };
+      }),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/system/metrics', (req, res) => {
+  try {
+    const mem = process.memoryUsage();
+    res.json({
+      uptimeSeconds: Math.floor(process.uptime()),
+      memory: {
+        rssMb: Math.round((mem.rss / 1024 / 1024) * 10) / 10,
+        heapTotalMb: Math.round((mem.heapTotal / 1024 / 1024) * 10) / 10,
+        heapUsedMb: Math.round((mem.heapUsed / 1024 / 1024) * 10) / 10,
+      },
+      activeDatabaseId: db.currentDatabaseId,
+      collections: {
+        products: db.products.length,
+        locations: db.locations.length,
+        categories: db.categories.length,
+        stockLevels: db.stockLevels.length,
+        stockMovements: db.stockMovements.length,
+        orders: db.orders.length,
+        purchaseOrders: db.purchaseOrders.length,
+        workOrders: db.workOrders.length,
+        waves: db.waves.length,
+        pallets: db.pallets.length,
+        uoms: db.uoms.length,
+        users: db.users.length,
+      },
+      timestamp: new Date().toISOString(),
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -262,10 +492,37 @@ app.post('/api/products', (req, res) => {
     };
 
     db.products.push(newProduct);
+    db.saveToDisk();
     res.status(201).json(newProduct);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.get('/api/products/:id', (req, res) => {
+  const { id } = req.params;
+  const product = db.products.find((p) => p.id === id || p.sku.toLowerCase() === id.toLowerCase());
+  if (!product) {
+    res.status(404).json({ error: 'Product not found.' });
+    return;
+  }
+
+  const stockLevels = db.stockLevels.filter((sl) => sl.productId === product.id);
+  const totalStock = stockLevels.reduce((sum, sl) => sum + sl.quantity, 0);
+
+  res.json({
+    ...product,
+    totalStock,
+    stockByLocation: stockLevels.map((sl) => {
+      const loc = db.locations.find((l) => l.id === sl.locationId);
+      return {
+        locationId: sl.locationId,
+        locationName: loc ? loc.name : sl.locationId,
+        locationCode: loc ? loc.code : 'UNKNOWN',
+        quantity: sl.quantity,
+      };
+    }),
+  });
 });
 
 app.put('/api/products/:id', (req, res) => {
@@ -277,6 +534,7 @@ app.put('/api/products/:id', (req, res) => {
   }
 
   Object.assign(product, req.body, { updatedAt: new Date().toISOString() });
+  db.saveToDisk();
   res.json(product);
 });
 
@@ -289,14 +547,283 @@ app.patch('/api/products/:id', (req, res) => {
   }
 
   Object.assign(product, req.body, { updatedAt: new Date().toISOString() });
+  db.saveToDisk();
   res.json(product);
 });
 
+app.delete('/api/products/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pIndex = db.products.findIndex((p) => p.id === id);
+    if (pIndex === -1) {
+      res.status(404).json({ error: 'Product not found.' });
+      return;
+    }
+
+    const product = db.products[pIndex];
+
+    // Remove stock levels associated with this product
+    db.stockLevels = db.stockLevels.filter((sl) => sl.productId !== id);
+
+    // Audit movement ledger entry
+    db.stockMovements.unshift({
+      id: `mov-${Date.now()}-del`,
+      productId: id,
+      fromLocationId: null,
+      toLocationId: null,
+      quantity: 0,
+      type: 'ADJUSTMENT',
+      reference: `SKU-DEL-${product.sku}`,
+      notes: `Product "${product.name}" (${product.sku}) permanently de-registered from catalog.`,
+      timestamp: new Date().toISOString(),
+      userId: 'usr-system-admin',
+    });
+
+    // Remove from catalog
+    db.products.splice(pIndex, 1);
+    db.saveToDisk();
+
+    res.json({
+      success: true,
+      message: `Product "${product.name}" (${product.sku}) successfully deleted and purged from catalog.`,
+      deletedProductId: id,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/products/bulk', (req, res) => {
+  try {
+    const { products } = req.body;
+    if (!Array.isArray(products) || products.length === 0) {
+      res.status(400).json({ error: 'Array of products is required.' });
+      return;
+    }
+
+    let inserted = 0;
+    let updated = 0;
+
+    products.forEach((raw) => {
+      if (!raw.sku || !raw.name) return;
+      const cleanSku = raw.sku.toUpperCase().trim();
+      const existing = db.products.find((p) => p.sku.toLowerCase() === cleanSku.toLowerCase());
+
+      if (existing) {
+        Object.assign(existing, {
+          name: raw.name.trim(),
+          category: raw.category || existing.category,
+          unitCost: parseFloat(raw.unitCost) || existing.unitCost,
+          retailPrice: parseFloat(raw.retailPrice) || existing.retailPrice,
+          unitOfMeasure: raw.unitOfMeasure || existing.unitOfMeasure,
+          reorderPoint: parseInt(raw.reorderPoint, 10) || existing.reorderPoint,
+          updatedAt: new Date().toISOString(),
+        });
+        updated++;
+      } else {
+        const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+        const newProd = {
+          id: `prod-${Date.now()}-${randomSuffix}`,
+          sku: cleanSku,
+          barcode: raw.barcode || `628100${randomSuffix}01`,
+          name: raw.name.trim(),
+          description: raw.description || '',
+          category: raw.category || 'General',
+          unitCost: parseFloat(raw.unitCost) || 50,
+          retailPrice: parseFloat(raw.retailPrice) || 120,
+          trackInventory: raw.trackInventory !== false,
+          reorderPoint: parseInt(raw.reorderPoint, 10) || 20,
+          leadTimeDays: parseInt(raw.leadTimeDays, 10) || 14,
+          unitOfMeasure: raw.unitOfMeasure || 'EA',
+          baseUoMId: 'uom-ea',
+          purchaseUoMId: 'uom-cs24',
+          salesUoMId: 'uom-ea',
+          defaultVendor: raw.defaultVendor || 'Red Sea Global Procurement',
+          vendorLeadTime: 14,
+          moq: 1,
+          packagings: [
+            {
+              id: `pkg-${Date.now()}-ea`,
+              productId: `prod-${Date.now()}-${randomSuffix}`,
+              uomId: 'uom-ea',
+              uomCode: 'EA',
+              packageLevel: 'EACH' as const,
+              barcode: raw.barcode || `628100${randomSuffix}01`,
+              qty: 1,
+              maxWeight: 1.0,
+              length: 10,
+              width: 10,
+              height: 10,
+            },
+          ],
+          variants: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        db.products.push(newProd);
+        inserted++;
+      }
+    });
+
+    db.saveToDisk();
+
+    res.json({
+      success: true,
+      message: `Bulk import completed: ${inserted} new SKUs created, ${updated} existing SKUs updated.`,
+      inserted,
+      updated,
+      totalCatalogCount: db.products.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // -------------------------------------------------------------
-// 2B. MULTI-TIER UoM & PACKAGING ENGINE
+// 2B. PRODUCT CATEGORY MANAGEMENT
+// -------------------------------------------------------------
+app.get('/api/categories', (req, res) => {
+  const enriched = db.categories.map((cat) => {
+    const matchingProducts = db.products.filter(
+      (p) => p.category && p.category.toLowerCase().trim() === cat.name.toLowerCase().trim()
+    );
+    let totalUnits = 0;
+    let totalValuation = 0;
+
+    matchingProducts.forEach((p) => {
+      const stockLevels = db.stockLevels.filter((sl) => sl.productId === p.id);
+      const stock = stockLevels.reduce((sum, sl) => sum + sl.quantity, 0);
+      totalUnits += stock;
+      totalValuation += stock * p.unitCost;
+    });
+
+    return {
+      ...cat,
+      productCount: matchingProducts.length,
+      totalUnits,
+      totalValuation: Math.round(totalValuation * 100) / 100,
+      productIds: matchingProducts.map((p) => p.id),
+    };
+  });
+  res.json(enriched);
+});
+
+app.get('/api/categories/:id', (req, res) => {
+  const cat = db.categories.find((c) => c.id === req.params.id);
+  if (!cat) {
+    res.status(404).json({ error: 'Category not found.' });
+    return;
+  }
+  const matchingProducts = db.products.filter(
+    (p) => p.category && p.category.toLowerCase().trim() === cat.name.toLowerCase().trim()
+  );
+  let totalUnits = 0;
+  let totalValuation = 0;
+
+  matchingProducts.forEach((p) => {
+    const stockLevels = db.stockLevels.filter((sl) => sl.productId === p.id);
+    const stock = stockLevels.reduce((sum, sl) => sum + sl.quantity, 0);
+    totalUnits += stock;
+    totalValuation += stock * p.unitCost;
+  });
+
+  res.json({
+    ...cat,
+    productCount: matchingProducts.length,
+    totalUnits,
+    totalValuation: Math.round(totalValuation * 100) / 100,
+    products: matchingProducts,
+  });
+});
+
+app.post('/api/categories', (req, res) => {
+  try {
+    const { name, code, description, color } = req.body;
+    if (!name || !code) {
+      res.status(400).json({ error: 'Category Name and Code are required.' });
+      return;
+    }
+    const exists = db.categories.find(
+      (c) => c.code.toLowerCase() === code.toLowerCase() || c.name.toLowerCase() === name.toLowerCase()
+    );
+    if (exists) {
+      res.status(400).json({ error: `Category "${name}" or code "${code}" already exists.` });
+      return;
+    }
+
+    const newCat = {
+      id: `cat-${Date.now()}`,
+      name: name.trim(),
+      code: code.toUpperCase().trim(),
+      description: description || '',
+      color: color || '#122b39',
+    };
+    db.categories.push(newCat);
+    db.saveToDisk();
+    res.status(201).json(newCat);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/categories/:id', (req, res) => {
+  const cat = db.categories.find((c) => c.id === req.params.id);
+  if (!cat) {
+    res.status(404).json({ error: 'Category not found.' });
+    return;
+  }
+  const oldName = cat.name;
+  Object.assign(cat, req.body);
+  if (req.body.name && req.body.name !== oldName) {
+    db.products.forEach((p) => {
+      if (p.category === oldName) {
+        p.category = req.body.name;
+      }
+    });
+  }
+  db.saveToDisk();
+  res.json(cat);
+});
+
+app.delete('/api/categories/:id', (req, res) => {
+  const idx = db.categories.findIndex((c) => c.id === req.params.id);
+  if (idx === -1) {
+    res.status(404).json({ error: 'Category not found.' });
+    return;
+  }
+  const cat = db.categories[idx];
+  db.categories.splice(idx, 1);
+  db.saveToDisk();
+  res.json({ message: `Category "${cat.name}" removed successfully.` });
+});
+
+// -------------------------------------------------------------
+// 2C. MULTI-TIER UoM & PACKAGING ENGINE
 // -------------------------------------------------------------
 app.get('/api/uom/categories', (req, res) => {
   res.json(db.uomCategories);
+});
+
+app.post('/api/uom/categories', (req, res) => {
+  try {
+    const { name, code, description } = req.body;
+    if (!name || !code) {
+      res.status(400).json({ error: 'Category name and code are required.' });
+      return;
+    }
+
+    const newUomCat = {
+      id: `uom-cat-${Date.now()}`,
+      name: name.trim(),
+      code: code.toUpperCase().trim(),
+      description: description || '',
+    };
+    db.uomCategories.push(newUomCat);
+    db.saveToDisk();
+    res.status(201).json(newUomCat);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/uom/units', (req, res) => {
@@ -324,10 +851,34 @@ app.post('/api/uom/units', (req, res) => {
     };
 
     db.uoms.push(newUom);
+    db.saveToDisk();
     res.status(201).json(newUom);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.put('/api/uom/units/:id', (req, res) => {
+  const u = db.uoms.find((item) => item.id === req.params.id);
+  if (!u) {
+    res.status(404).json({ error: 'Unit of Measure not found.' });
+    return;
+  }
+  Object.assign(u, req.body);
+  db.saveToDisk();
+  res.json(u);
+});
+
+app.delete('/api/uom/units/:id', (req, res) => {
+  const idx = db.uoms.findIndex((u) => u.id === req.params.id);
+  if (idx === -1) {
+    res.status(404).json({ error: 'Unit of Measure not found.' });
+    return;
+  }
+  const u = db.uoms[idx];
+  db.uoms.splice(idx, 1);
+  db.saveToDisk();
+  res.json({ message: `Unit of Measure "${u.code}" removed.` });
 });
 
 app.get('/api/barcode/lookup/:barcode', (req, res) => {
@@ -402,7 +953,277 @@ app.post('/api/receiving/resolve-variance', async (req, res) => {
 // 3. LOCATIONS & STOCK LEVELS
 // -------------------------------------------------------------
 app.get('/api/locations', (req, res) => {
-  res.json(db.locations);
+  const enriched = db.locations.map((loc) => {
+    const facilityStock = db.stockLevels.filter((sl) => sl.locationId === loc.id);
+    const totalUnits = facilityStock.reduce((acc, s) => acc + s.quantity, 0);
+    const uniqueSkus = new Set(facilityStock.filter((s) => s.quantity > 0).map((s) => s.productId)).size;
+    const nominalCapacity = loc.nominalCapacity || (loc.type === 'WAREHOUSE' ? 12000 : loc.type === 'QUARANTINE' ? 2000 : 3500);
+    const utilizationRate = Math.min(100, Math.round((totalUnits / nominalCapacity) * 1000) / 10);
+
+    return {
+      ...loc,
+      totalUnits,
+      skuCount: uniqueSkus,
+      nominalCapacity,
+      utilizationRate,
+      zones: loc.zones && loc.zones.length > 0 ? loc.zones : [
+        'Zone A - Inbound Receiving & Staging',
+        'Zone B - Automated High-Bay Racks',
+        'Zone C - Pick-to-Light & Sorting',
+        'Zone D - Outbound Freight Dispatch',
+      ],
+      temperatureZone: loc.temperatureZone || (loc.name.toLowerCase().includes('cold') || loc.name.toLowerCase().includes('trojena') ? 'Cold Logistics (-20°C to 4°C)' : 'Ambient Climate Controlled (20-24°C)'),
+      managerName: loc.managerName || 'Logistics Operations Lead',
+      contactPhone: loc.contactPhone || '+966 14 555 0192',
+    };
+  });
+  res.json(enriched);
+});
+
+app.get('/api/locations/:id', (req, res) => {
+  const loc = db.locations.find((l) => l.id === req.params.id || l.code.toLowerCase() === req.params.id.toLowerCase());
+  if (!loc) {
+    res.status(404).json({ error: 'Location not found.' });
+    return;
+  }
+
+  const facilityStock = db.stockLevels.filter((sl) => sl.locationId === loc.id);
+  const totalUnits = facilityStock.reduce((acc, s) => acc + s.quantity, 0);
+  const uniqueSkus = new Set(facilityStock.filter((s) => s.quantity > 0).map((s) => s.productId)).size;
+  const nominalCapacity = loc.nominalCapacity || (loc.type === 'WAREHOUSE' ? 12000 : 3500);
+  const utilizationRate = Math.min(100, Math.round((totalUnits / nominalCapacity) * 1000) / 10);
+
+  const inventory = facilityStock.map((sl) => {
+    const prod = db.products.find((p) => p.id === sl.productId);
+    return {
+      ...sl,
+      product: prod,
+    };
+  });
+
+  res.json({
+    ...loc,
+    totalUnits,
+    skuCount: uniqueSkus,
+    nominalCapacity,
+    utilizationRate,
+    zones: loc.zones || [
+      'Zone A - Inbound Receiving & Staging',
+      'Zone B - Automated High-Bay Racks',
+      'Zone C - Pick-to-Light & Sorting',
+      'Zone D - Outbound Freight Dispatch',
+    ],
+    temperatureZone: loc.temperatureZone || 'Ambient Climate Controlled (20-24°C)',
+    managerName: loc.managerName || 'Logistics Operations Lead',
+    contactPhone: loc.contactPhone || '+966 14 555 0192',
+    inventory,
+  });
+});
+
+app.post('/api/locations', (req, res) => {
+  try {
+    const {
+      name,
+      code,
+      type,
+      address,
+      city,
+      state,
+      postalCode,
+      latitude,
+      longitude,
+      nominalCapacity,
+      zones,
+      temperatureZone,
+      managerName,
+      contactPhone,
+    } = req.body;
+
+    if (!name || !code) {
+      res.status(400).json({ error: 'Facility Name and Code are mandatory.' });
+      return;
+    }
+
+    const cleanCode = code.toUpperCase().trim();
+    if (db.locations.some((l) => l.code.toLowerCase() === cleanCode.toLowerCase())) {
+      res.status(400).json({ error: `Location with code "${cleanCode}" already exists.` });
+      return;
+    }
+
+    const parsedZones = Array.isArray(zones) && zones.length > 0
+      ? zones.map((z: string) => z.trim()).filter(Boolean)
+      : [
+          'Zone A - Inbound Receiving & Staging',
+          'Zone B - High-Bay Racks',
+          'Zone C - Pick & Pack Sorting',
+          'Zone D - Outbound Shipping Dock',
+        ];
+
+    const newLoc = {
+      id: `loc-${Date.now()}`,
+      name: name.trim(),
+      code: cleanCode,
+      type: (type || 'WAREHOUSE') as any,
+      address: address || '',
+      city: city || 'NEOM Region',
+      state: state || 'Tabuk Province',
+      postalCode: postalCode || '49643',
+      latitude: latitude ? parseFloat(latitude) : 28.0,
+      longitude: longitude ? parseFloat(longitude) : 35.2,
+      nominalCapacity: nominalCapacity ? parseInt(nominalCapacity, 10) : 12000,
+      zones: parsedZones,
+      temperatureZone: temperatureZone || 'Ambient Climate Controlled (20-24°C)',
+      managerName: managerName || 'Logistics Lead',
+      contactPhone: contactPhone || '+966 14 555 0192',
+      active: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    db.locations.push(newLoc);
+    db.saveToDisk();
+
+    res.status(201).json({
+      success: true,
+      message: `Facility "${newLoc.name}" registered in logistics network.`,
+      location: newLoc,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/locations/:id', (req, res) => {
+  const loc = db.locations.find((l) => l.id === req.params.id);
+  if (!loc) {
+    res.status(404).json({ error: 'Location not found.' });
+    return;
+  }
+
+  const {
+    name,
+    code,
+    type,
+    address,
+    city,
+    state,
+    postalCode,
+    latitude,
+    longitude,
+    nominalCapacity,
+    zones,
+    temperatureZone,
+    managerName,
+    contactPhone,
+    active,
+  } = req.body;
+
+  if (name) loc.name = name.trim();
+  if (code) loc.code = code.toUpperCase().trim();
+  if (type) loc.type = type;
+  if (address !== undefined) loc.address = address;
+  if (city !== undefined) loc.city = city;
+  if (state !== undefined) loc.state = state;
+  if (postalCode !== undefined) loc.postalCode = postalCode;
+  if (latitude !== undefined) loc.latitude = parseFloat(latitude) || loc.latitude;
+  if (longitude !== undefined) loc.longitude = parseFloat(longitude) || loc.longitude;
+  if (nominalCapacity !== undefined) loc.nominalCapacity = parseInt(nominalCapacity, 10) || loc.nominalCapacity;
+  if (zones !== undefined) loc.zones = Array.isArray(zones) ? zones : loc.zones;
+  if (temperatureZone !== undefined) loc.temperatureZone = temperatureZone;
+  if (managerName !== undefined) loc.managerName = managerName;
+  if (contactPhone !== undefined) loc.contactPhone = contactPhone;
+  if (active !== undefined) loc.active = Boolean(active);
+
+  loc.updatedAt = new Date().toISOString();
+  db.saveToDisk();
+  res.json(loc);
+});
+
+app.delete('/api/locations/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const lIndex = db.locations.findIndex((l) => l.id === id);
+    if (lIndex === -1) {
+      res.status(404).json({ error: 'Location not found.' });
+      return;
+    }
+
+    const loc = db.locations[lIndex];
+    const activeUnits = db.stockLevels
+      .filter((sl) => sl.locationId === id)
+      .reduce((sum, sl) => sum + sl.quantity, 0);
+
+    if (activeUnits > 0) {
+      res.status(400).json({
+        error: `Cannot decommission facility "${loc.name}". It currently stores ${activeUnits} physical units. Please perform a stock transfer or write-off adjustment before deleting.`,
+      });
+      return;
+    }
+
+    // Clean up empty stock level records
+    db.stockLevels = db.stockLevels.filter((sl) => sl.locationId !== id);
+    db.locations.splice(lIndex, 1);
+    db.saveToDisk();
+
+    res.json({
+      success: true,
+      message: `Facility "${loc.name}" (${loc.code}) safely decommissioned from network.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/locations/:id/bays', (req, res) => {
+  const loc = db.locations.find((l) => l.id === req.params.id);
+  if (!loc) {
+    res.status(404).json({ error: 'Location not found.' });
+    return;
+  }
+
+  const facilityStock = db.stockLevels.filter((sl) => sl.locationId === loc.id);
+  const aisles = ['A', 'B', 'C', 'D'];
+  const racksPerAisle = 4;
+  const tiersPerRack = 3;
+
+  const baySlots: any[] = [];
+  let stockIndex = 0;
+
+  aisles.forEach((aisle) => {
+    for (let rack = 1; rack <= racksPerAisle; rack++) {
+      for (let tier = 1; tier <= tiersPerRack; tier++) {
+        const slotCode = `${aisle}${rack}-T${tier}`;
+        const assignedStock = facilityStock[stockIndex % (facilityStock.length || 1)];
+        const prod = assignedStock ? db.products.find((p) => p.id === assignedStock.productId) : null;
+        const isOccupied = !!(assignedStock && assignedStock.quantity > 0 && stockIndex < facilityStock.length);
+
+        baySlots.push({
+          id: `slot-${loc.id}-${slotCode}`,
+          code: slotCode,
+          aisle,
+          rack: `R-${rack}`,
+          tier: `Tier ${tier}`,
+          isOccupied,
+          productId: isOccupied && prod ? prod.id : undefined,
+          sku: isOccupied && prod ? prod.sku : undefined,
+          productName: isOccupied && prod ? prod.name : undefined,
+          category: isOccupied && prod ? prod.category : undefined,
+          quantity: isOccupied && assignedStock ? assignedStock.quantity : 0,
+          maxCapacity: 100,
+        });
+
+        if (isOccupied) stockIndex++;
+      }
+    }
+  });
+
+  res.json({
+    locationId: loc.id,
+    locationName: loc.name,
+    totalSlots: baySlots.length,
+    occupiedSlots: baySlots.filter((s) => s.isOccupied).length,
+    slots: baySlots,
+  });
 });
 
 app.get('/api/stock-levels', (req, res) => {
@@ -512,7 +1333,7 @@ app.post('/api/stock/transfer', async (req, res) => {
 });
 
 app.get('/api/stock/movements', (req, res) => {
-  const limit = parseInt(req.query.limit as string, 10) || 50;
+  const limit = parseInt(req.query.limit as string, 10) || 100;
   const enriched = db.stockMovements.slice(0, limit).map((m) => {
     const product = db.products.find((p) => p.id === m.productId);
     const fromLoc = m.fromLocationId ? db.locations.find((l) => l.id === m.fromLocationId) : null;
@@ -526,6 +1347,130 @@ app.get('/api/stock/movements', (req, res) => {
     };
   });
   res.json(enriched);
+});
+
+// -------------------------------------------------------------
+// 4B. PHYSICAL QUANTITY ADJUSTMENT & CYCLE COUNT ENGINE
+// -------------------------------------------------------------
+app.post('/api/stock/physical-count/post', async (req, res) => {
+  try {
+    const { locationId, reason, notes, adjustments, userId } = req.body;
+    if (!locationId || !Array.isArray(adjustments) || adjustments.length === 0) {
+      res.status(400).json({ error: 'Location and non-empty adjustments array are required.' });
+      return;
+    }
+
+    const sessionRef = `PHYS-ADJ-${Date.now().toString().slice(-6)}`;
+    const results: any[] = [];
+
+    await db.executeTransaction(async ({ adjustStock }) => {
+      for (const adj of adjustments) {
+        const delta = parseInt(adj.countedQty, 10) - parseInt(adj.systemQty, 10);
+        if (delta !== 0) {
+          const r = adjustStock({
+            productId: adj.productId,
+            locationId,
+            quantityDelta: delta,
+            type: 'ADJUSTMENT',
+            reference: sessionRef,
+            notes: `${reason || 'Physical Count Audit'}: ${delta > 0 ? '+' : ''}${delta} diff. ${adj.notes || notes || ''}`,
+            userId: userId || 'usr-audit-lead',
+          });
+          results.push(r);
+        }
+      }
+      return results;
+    });
+
+    res.json({
+      success: true,
+      message: `Physical count reconciliation committed. ${results.length} SKU discrepancies adjusted atomically.`,
+      reference: sessionRef,
+      adjustedCount: results.length,
+      results,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message, details: err.details });
+  }
+});
+
+// -------------------------------------------------------------
+// 4C. BATCH IMPORT & EXPORT INVENTORY OPERATIONS
+// -------------------------------------------------------------
+app.post('/api/stock/batch-operations', async (req, res) => {
+  try {
+    const { operations, userId } = req.body;
+    if (!Array.isArray(operations) || operations.length === 0) {
+      res.status(400).json({ error: 'Operations array is required.' });
+      return;
+    }
+
+    const results: any[] = [];
+    await db.executeTransaction(async ({ adjustStock, transferStock }) => {
+      for (const op of operations) {
+        const type = (op.type || 'TRANSFER').toUpperCase().trim();
+        const qty = Math.abs(parseInt(op.quantity, 10));
+        if (!qty || qty <= 0) continue;
+
+        if (type === 'TRANSFER') {
+          const r = transferStock({
+            productId: op.productId,
+            fromLocationId: op.fromLocationId,
+            toLocationId: op.toLocationId,
+            quantity: qty,
+            reference: op.reference || 'BATCH-TRF',
+            notes: op.notes || 'Batch imported transfer',
+            userId: userId || 'usr-ops-lead',
+          });
+          results.push(r);
+        } else if (type === 'RECEIPT') {
+          const r = adjustStock({
+            productId: op.productId,
+            locationId: op.toLocationId || op.locationId,
+            quantityDelta: qty,
+            type: 'RECEIPT',
+            reference: op.reference || 'BATCH-RCV',
+            notes: op.notes || 'Batch imported receipt',
+            userId: userId || 'usr-ops-lead',
+          });
+          results.push(r);
+        } else if (type === 'SCRAP' || type === 'ISSUE') {
+          const r = adjustStock({
+            productId: op.productId,
+            locationId: op.fromLocationId || op.locationId,
+            quantityDelta: -qty,
+            type: 'ADJUSTMENT',
+            reference: op.reference || 'BATCH-SCRAP',
+            notes: op.notes || 'Batch scrap write-off',
+            userId: userId || 'usr-ops-lead',
+          });
+          results.push(r);
+        } else if (type === 'ADJUSTMENT') {
+          const delta = parseInt(op.quantityDelta || op.quantity, 10);
+          const r = adjustStock({
+            productId: op.productId,
+            locationId: op.locationId,
+            quantityDelta: delta,
+            type: 'ADJUSTMENT',
+            reference: op.reference || 'BATCH-ADJ',
+            notes: op.notes || 'Batch imported adjustment',
+            userId: userId || 'usr-ops-lead',
+          });
+          results.push(r);
+        }
+      }
+      return results;
+    });
+
+    res.json({
+      success: true,
+      message: `Successfully executed ${results.length} operations in atomic batch.`,
+      executedCount: results.length,
+      results,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message, details: err.details });
+  }
 });
 
 // -------------------------------------------------------------
@@ -600,8 +1545,57 @@ app.get('/api/orders', (req, res) => {
   res.json(enrichedOrders);
 });
 
+app.get('/api/orders/:id', (req, res) => {
+  const order = db.orders.find((o) => o.id === req.params.id || o.externalOrderNo === req.params.id);
+  if (!order) {
+    res.status(404).json({ error: 'Order not found.' });
+    return;
+  }
+  const itemsEnriched = order.items.map((i) => {
+    const p = db.products.find((prod) => prod.id === i.productId);
+    return {
+      ...i,
+      sku: p ? p.sku : 'UNKNOWN',
+      name: p ? p.name : 'Unknown Product',
+    };
+  });
+  res.json({ ...order, items: itemsEnriched });
+});
+
+app.post('/api/orders/:id/status', (req, res) => {
+  const order = db.orders.find((o) => o.id === req.params.id || o.externalOrderNo === req.params.id);
+  if (!order) {
+    res.status(404).json({ error: 'Order not found.' });
+    return;
+  }
+  const { status } = req.body;
+  if (status) {
+    order.status = status;
+    order.updatedAt = new Date().toISOString();
+    db.saveToDisk();
+  }
+  res.json({ success: true, order });
+});
+
 app.get('/api/channels', (req, res) => {
   res.json(db.channelSyncs);
+});
+
+app.post('/api/channels/:id/sync', (req, res) => {
+  const channel = db.channelSyncs.find((c) => c.id === req.params.id || c.channelId === req.params.id);
+  if (!channel) {
+    res.status(404).json({ error: 'Channel not found.' });
+    return;
+  }
+  channel.lastSyncAt = new Date().toISOString();
+  channel.syncStatus = 'SYNCED';
+  channel.pendingOrdersCount = 0;
+  db.saveToDisk();
+  res.json({
+    success: true,
+    message: `Channel "${channel.name}" inventory catalog synchronized.`,
+    channel,
+  });
 });
 
 // -------------------------------------------------------------
@@ -829,6 +1823,99 @@ app.get('/api/purchase-orders', (req, res) => {
   res.json(enriched);
 });
 
+app.get('/api/purchase-orders/:id', (req, res) => {
+  const po = db.purchaseOrders.find((p) => p.id === req.params.id || p.poNumber === req.params.id);
+  if (!po) {
+    res.status(404).json({ error: 'Purchase Order not found.' });
+    return;
+  }
+  const loc = db.locations.find((l) => l.id === po.locationId);
+  const itemsList = po.items || po.lines?.map((l) => ({
+    productId: l.productId,
+    quantity: l.expectedBaseQty,
+    unitCost: l.unitCost,
+  })) || [];
+  const itemsEnriched = itemsList.map((i) => {
+    const prod = db.products.find((p) => p.id === i.productId);
+    return {
+      ...i,
+      sku: prod ? prod.sku : 'UNKNOWN',
+      name: prod ? prod.name : 'Unknown Product',
+    };
+  });
+
+  res.json({
+    ...po,
+    locationName: loc ? loc.name : po.locationId,
+    items: itemsEnriched,
+  });
+});
+
+app.post('/api/purchase-orders', (req, res) => {
+  try {
+    const { supplier, locationId, items, notes } = req.body;
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      res.status(400).json({ error: 'Items array is required to create a purchase order.' });
+      return;
+    }
+
+    const locId = locationId || db.locations[0].id;
+    const poNumber = `PO-NEOM-${Date.now().toString().slice(-5)}`;
+    let totalCost = 0;
+
+    const formattedItems = items.map((it: any) => {
+      const prod = db.products.find((p) => p.id === it.productId || p.sku === it.sku);
+      const cost = parseFloat(it.unitCost) || (prod ? prod.unitCost : 50);
+      const qty = parseInt(it.quantity, 10) || 10;
+      totalCost += cost * qty;
+      return {
+        productId: prod ? prod.id : it.productId,
+        quantity: qty,
+        unitCost: cost,
+      };
+    });
+
+    const newPo: PurchaseOrder = {
+      id: `po-${Date.now()}`,
+      poNumber,
+      vendorName: supplier || 'Red Sea Global Procurement',
+      supplier: supplier || 'Red Sea Global Procurement',
+      locationId: locId,
+      status: 'DRAFT',
+      isAiAutoGenerated: false,
+      items: formattedItems,
+      lines: formattedItems.map((f, idx) => {
+        const prod = db.products.find((p) => p.id === f.productId);
+        return {
+          id: `pol-${Date.now()}-${idx}`,
+          poId: `po-${Date.now()}`,
+          productId: f.productId,
+          productSku: prod ? prod.sku : 'SKU',
+          productName: prod ? prod.name : 'Product',
+          expectedQty: f.quantity,
+          expectedUomId: 'uom-ea',
+          expectedUomCode: 'EA',
+          expectedBaseQty: f.quantity,
+          unitCost: f.unitCost,
+        };
+      }),
+      totalCost: Math.round(totalCost * 100) / 100,
+      createdAt: new Date().toISOString(),
+    };
+
+    db.purchaseOrders.unshift(newPo);
+    db.saveToDisk();
+
+    res.status(201).json({
+      success: true,
+      message: `Purchase Order ${poNumber} generated successfully.`,
+      purchaseOrder: newPo,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 1-Click Purchase Order Approval
 app.post('/api/purchase-orders/:id/approve', async (req, res) => {
   try {
@@ -840,6 +1927,7 @@ app.post('/api/purchase-orders/:id/approve', async (req, res) => {
     }
 
     po.status = 'APPROVED';
+    db.saveToDisk();
     res.json({
       message: `Purchase Order ${po.poNumber} has been approved for supplier dispatch.`,
       purchaseOrder: po,
@@ -847,6 +1935,21 @@ app.post('/api/purchase-orders/:id/approve', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.post('/api/purchase-orders/:id/cancel', (req, res) => {
+  const { id } = req.params;
+  const po = db.purchaseOrders.find((p) => p.id === id);
+  if (!po) {
+    res.status(404).json({ error: 'Purchase Order not found.' });
+    return;
+  }
+  po.status = 'CANCELLED';
+  db.saveToDisk();
+  res.json({
+    message: `Purchase Order ${po.poNumber} has been cancelled.`,
+    purchaseOrder: po,
+  });
 });
 
 // -------------------------------------------------------------
@@ -871,6 +1974,41 @@ app.get('/api/manufacturing/boms', (req, res) => {
     };
   });
   res.json(enriched);
+});
+
+app.post('/api/manufacturing/boms', (req, res) => {
+  try {
+    const { bomCode, name, finishedGoodId, finishedQuantity, items } = req.body;
+    if (!bomCode || !finishedGoodId || !items || !Array.isArray(items)) {
+      res.status(400).json({ error: 'bomCode, finishedGoodId, and items array are required.' });
+      return;
+    }
+
+    const newBom: BillOfMaterials = {
+      id: `bom-${Date.now()}`,
+      bomCode: bomCode.toUpperCase().trim(),
+      name: name || `BOM for ${bomCode}`,
+      finishedGoodId,
+      finishedQuantity: parseInt(finishedQuantity, 10) || 1,
+      laborCostEstimate: 0,
+      items: items.map((it: any) => ({
+        componentProductId: it.componentProductId || it.productId,
+        quantityRequired: parseFloat(it.quantityRequired) || 1,
+      })),
+      createdAt: new Date().toISOString(),
+    };
+
+    db.boms.push(newBom);
+    db.saveToDisk();
+
+    res.status(201).json({
+      success: true,
+      message: `Bill of Materials "${newBom.bomCode}" registered.`,
+      bom: newBom,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/manufacturing/work-orders', (req, res) => {
@@ -1005,6 +2143,46 @@ app.get('/api/pallets', (req, res) => {
     };
   });
   res.json(enriched);
+});
+
+app.post('/api/pallets', (req, res) => {
+  try {
+    const { lpnCode, locationId, binId, items } = req.body;
+    if (!lpnCode || !locationId || !items || !Array.isArray(items)) {
+      res.status(400).json({ error: 'lpnCode, locationId, and items array are required.' });
+      return;
+    }
+
+    const cleanLpn = lpnCode.toUpperCase().trim();
+    if (db.pallets.some((p) => p.lpnCode.toLowerCase() === cleanLpn.toLowerCase())) {
+      res.status(400).json({ error: `Pallet with LPN "${cleanLpn}" already exists.` });
+      return;
+    }
+
+    const newPallet: Pallet = {
+      id: `plt-${Date.now()}`,
+      lpnCode: cleanLpn,
+      locationId,
+      binId: binId || null,
+      status: 'RECEIVED',
+      items: items.map((it: any) => ({
+        productId: it.productId,
+        quantity: parseInt(it.quantity, 10) || 1,
+      })),
+      createdAt: new Date().toISOString(),
+    };
+
+    db.pallets.push(newPallet);
+    db.saveToDisk();
+
+    res.status(201).json({
+      success: true,
+      message: `LPN Pallet "${newPallet.lpnCode}" registered.`,
+      pallet: newPallet,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Move an entire LPN Pallet to another location atomically

@@ -5,23 +5,24 @@ import {
   ArrowLeftRight,
   Barcode,
   BrainCircuit,
-  ShoppingBag,
-  Factory,
-  FileCode2,
+  FileSpreadsheet,
   Scan,
-  EyeOff,
+  Tag,
+  ClipboardCheck,
+  Warehouse,
 } from 'lucide-react';
 
 export type ActiveTab =
   | 'dashboard'
   | 'warehouses'
   | 'products'
+  | 'categories'
   | 'blind-receiving'
   | 'stock-ops'
+  | 'physical-count'
   | 'wes-picking'
   | 'demand-planning'
-  | 'omni-channel-pos'
-  | 'manufacturing'
+  | 'reports'
   | 'schema-viewer';
 
 interface NavigationProps {
@@ -47,11 +48,25 @@ export const Navigation: React.FC<NavigationProps> = ({
       badge: null,
     },
     {
+      id: 'warehouses' as ActiveTab,
+      label: 'Warehouses & Locations',
+      icon: Warehouse,
+      badge: 'Facilities & Settings',
+      badgeColor: 'bg-[#1b3d52] text-[#e5a329]',
+    },
+    {
       id: 'products' as ActiveTab,
       label: 'Product Master & Packaging',
       icon: Boxes,
       badge: '4-Tier UoM',
       badgeColor: 'bg-cyan-950 text-cyan-300 border-cyan-800',
+    },
+    {
+      id: 'categories' as ActiveTab,
+      label: 'Categories & UoM',
+      icon: Tag,
+      badge: 'Taxonomy',
+      badgeColor: 'bg-amber-950 text-amber-300 border-amber-800',
     },
     {
       id: 'blind-receiving' as ActiveTab,
@@ -67,7 +82,14 @@ export const Navigation: React.FC<NavigationProps> = ({
       id: 'stock-ops' as ActiveTab,
       label: 'Stock Operations',
       icon: ArrowLeftRight,
-      badge: null,
+      badge: 'Import/Export',
+    },
+    {
+      id: 'physical-count' as ActiveTab,
+      label: 'Physical Adjustment Engine',
+      icon: ClipboardCheck,
+      badge: 'Audit',
+      badgeColor: 'bg-emerald-950 text-emerald-300 border-emerald-800',
     },
     {
       id: 'wes-picking' as ActiveTab,
@@ -83,22 +105,10 @@ export const Navigation: React.FC<NavigationProps> = ({
       badgeColor: 'bg-purple-950 text-purple-300 border-purple-800',
     },
     {
-      id: 'omni-channel-pos' as ActiveTab,
-      label: 'Routing & POS',
-      icon: ShoppingBag,
-      badge: 'Split Engine',
-    },
-    {
-      id: 'manufacturing' as ActiveTab,
-      label: 'BOM & Manufacturing',
-      icon: Factory,
-      badge: null,
-    },
-    {
-      id: 'schema-viewer' as ActiveTab,
-      label: 'Prisma Schema',
-      icon: FileCode2,
-      badge: 'Postgres',
+      id: 'reports' as ActiveTab,
+      label: 'Warehouse Reports & Analytics',
+      icon: FileSpreadsheet,
+      badge: 'Executive',
     },
   ];
 

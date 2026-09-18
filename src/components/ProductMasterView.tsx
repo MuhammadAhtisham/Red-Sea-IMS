@@ -32,6 +32,7 @@ import {
   CreateProductInput,
   UoMDTO,
   UoMCategoryDTO,
+  CategoryDTO,
   ProductPackagingDTO,
   api,
 } from '../services/api';
@@ -65,6 +66,7 @@ export const ProductMasterView: React.FC<ProductMasterViewProps> = ({
   // Master UoM state
   const [uoms, setUoms] = useState<UoMDTO[]>([]);
   const [uomCategories, setUomCategories] = useState<UoMCategoryDTO[]>([]);
+  const [masterCategories, setMasterCategories] = useState<CategoryDTO[]>([]);
 
   // Selected or Form Product State
   const [activeProduct, setActiveProduct] = useState<Partial<ProductDTO>>({
@@ -152,14 +154,16 @@ export const ProductMasterView: React.FC<ProductMasterViewProps> = ({
   useEffect(() => {
     const fetchMeta = async () => {
       try {
-        const [uData, cData] = await Promise.all([
+        const [uData, cData, catData] = await Promise.all([
           api.getUoms(),
           api.getUomCategories(),
+          api.getCategories(),
         ]);
         setUoms(uData);
         setUomCategories(cData);
+        setMasterCategories(catData);
       } catch (e) {
-        console.error('Failed to load UoMs', e);
+        console.error('Failed to load UoMs or Categories', e);
       }
     };
     fetchMeta();
@@ -327,7 +331,15 @@ export const ProductMasterView: React.FC<ProductMasterViewProps> = ({
   };
 
   // Categories list
-  const categories = ['ALL', ...Array.from(new Set(products.map((p) => p.category)))];
+  const categories = [
+    'ALL',
+    ...Array.from(
+      new Set([
+        ...masterCategories.map((c) => c.name),
+        ...products.map((p) => p.category || 'General'),
+      ])
+    ).filter(Boolean),
+  ];
 
   // Filtering products
   const filteredProducts = products.filter((p) => {
@@ -835,14 +847,104 @@ export const ProductMasterView: React.FC<ProductMasterViewProps> = ({
 
                       <div>
                         <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
-                          Category
+                          Category *
+                        </label>
+                        <select
+                          value={activeProduct.category || ''}
+                          onChange={(e) => setActiveProduct({ ...activeProduct, category: e.target.value })}
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-medium focus:outline-none focus:border-[#122b39] focus:bg-white"
+                        >
+                          {masterCategories.length > 0 ? (
+                            masterCategories.map((c) => (
+                              <option key={c.id} value={c.name}>
+                                {c.name} ({c.code})
+                              </option>
+                            ))
+                          ) : (
+                            <option value="Smart Infrastructure">Smart Infrastructure</option>
+                          )}
+                          {activeProduct.category &&
+                            !masterCategories.some(
+                              (c) => c.name.toLowerCase() === activeProduct.category?.toLowerCase()
+                            ) && (
+                              <option value={activeProduct.category}>{activeProduct.category}</option>
+                            )}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Extended Enterprise Specifications */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
+                          Brand / Manufacturer
                         </label>
                         <input
                           type="text"
-                          value={activeProduct.category || ''}
-                          onChange={(e) => setActiveProduct({ ...activeProduct, category: e.target.value })}
+                          value={activeProduct.brand || ''}
+                          onChange={(e) => setActiveProduct({ ...activeProduct, brand: e.target.value })}
                           className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] focus:outline-none focus:border-[#122b39] focus:bg-white"
-                          placeholder="Smart Infrastructure"
+                          placeholder="e.g. Red Sea Microelectronics"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
+                          Storage Condition
+                        </label>
+                        <select
+                          value={activeProduct.storageCondition || 'Ambient'}
+                          onChange={(e) => setActiveProduct({ ...activeProduct, storageCondition: e.target.value })}
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] font-medium focus:outline-none focus:border-[#122b39] focus:bg-white"
+                        >
+                          <option value="Ambient">Ambient Standard Bay (15°C - 25°C)</option>
+                          <option value="Climate Controlled">Climate Controlled (20°C ± 2°C)</option>
+                          <option value="Cold Chain (2-8°C)">Cold Chain Refrigerated (2°C - 8°C)</option>
+                          <option value="Frozen (-20°C)">Deep Freeze (-20°C)</option>
+                          <option value="Hazmat Class 3">Flammable / Hazmat Class 3</option>
+                          <option value="ESD Safe">ESD Sensitive Electronic Bay</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
+                          Net Weight (kg)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={activeProduct.weight || ''}
+                          onChange={(e) => setActiveProduct({ ...activeProduct, weight: parseFloat(e.target.value) || 0 })}
+                          className="w-full px-3 py-2 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs font-mono text-[#122b39] focus:outline-none focus:border-[#122b39]"
+                          placeholder="2.45"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
+                          Dimensions (L×W×H)
+                        </label>
+                        <input
+                          type="text"
+                          value={activeProduct.dimensions || ''}
+                          onChange={(e) => setActiveProduct({ ...activeProduct, dimensions: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs font-mono text-[#122b39] focus:outline-none focus:border-[#122b39]"
+                          placeholder="30x20x15 cm"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-[#526677] mb-1.5">
+                          Country of Origin
+                        </label>
+                        <input
+                          type="text"
+                          value={activeProduct.countryOfOrigin || ''}
+                          onChange={(e) => setActiveProduct({ ...activeProduct, countryOfOrigin: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-[#faf9f6] border border-[#e5e1d5] text-xs text-[#122b39] focus:outline-none focus:border-[#122b39]"
+                          placeholder="Saudi Arabia (KSA)"
                         />
                       </div>
                     </div>

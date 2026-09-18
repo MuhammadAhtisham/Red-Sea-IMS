@@ -1,7 +1,7 @@
 // Server TypeScript Interfaces and DTOs
 
 export type Role = 'ADMIN' | 'MANAGER' | 'STAFF';
-export type LocationType = 'WAREHOUSE' | 'STOREFRONT' | 'QUARANTINE';
+export type LocationType = 'WAREHOUSE' | 'STOREFRONT' | 'QUARANTINE' | 'STORE' | 'TRANSIT_HUB';
 export type MovementType = 'RECEIPT' | 'TRANSFER' | 'SALE' | 'ADJUSTMENT' | 'RETURN' | 'QUARANTINE_ISOLATION' | 'QUARANTINE_RELEASE';
 export type SyncPlatform = 'SHOPIFY' | 'WOOCOMMERCE' | 'AMAZON' | 'ODOO_ERP' | 'B2B_PORTAL';
 export type ItemStatus = 'AVAILABLE' | 'RESERVED' | 'QUARANTINED' | 'EXPIRED' | 'SHIPPED';
@@ -25,6 +25,14 @@ export interface User {
 }
 
 // 1. Multi-Tier UoM & Packaging Schema
+export interface Category {
+  id: string;
+  name: string;
+  code: string;
+  description?: string;
+  color?: string;
+}
+
 export interface UoMCategory {
   id: string;
   name: string;
@@ -95,6 +103,12 @@ export interface Product {
   moq?: number;
   packagings?: ProductPackaging[];
   variants?: ProductVariant[];
+  weight?: number;
+  dimensions?: string;
+  storageCondition?: string;
+  brand?: string;
+  countryOfOrigin?: string;
+  maxCapacity?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -111,7 +125,16 @@ export interface Location {
   latitude: number;
   longitude: number;
   active: boolean;
+  nominalCapacity?: number;
+  totalUnits?: number;
+  skuCount?: number;
+  utilizationRate?: number;
+  zones?: string[];
+  temperatureZone?: string;
+  managerName?: string;
+  contactPhone?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface StockLevel {
@@ -142,6 +165,11 @@ export interface ChannelSync {
   channelName: string;
   status: 'HEALTHY' | 'SYNCING' | 'ERROR';
   lastSyncTime: string;
+  name?: string;
+  channelId?: string;
+  syncStatus?: string;
+  pendingOrdersCount?: number;
+  lastSyncAt?: string;
 }
 
 export interface StockItem {
@@ -259,6 +287,7 @@ export interface Order {
   items: OrderItem[];
   shipments?: Shipment[];
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface Shipment {
