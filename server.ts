@@ -1,6 +1,7 @@
 // Express Backend Server with Full Tier-1 Enterprise ERP API Endpoints
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { db, TransactionError } from './server/store.js';
 import { processOrderRouting } from './server/smartRouting.js';
@@ -2353,10 +2354,21 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    let distPath = path.join(process.cwd(), 'dist');
+    if (!fs.existsSync(path.join(distPath, 'index.html'))) {
+      distPath = __dirname;
+    }
+    if (!fs.existsSync(path.join(distPath, 'index.html'))) {
+      distPath = process.cwd();
+    }
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      const indexPath = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.status(404).send('index.html not found. Please run "npm run build".');
+      }
     });
   }
 
