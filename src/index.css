@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@layer utilities {
+  /* Diagonal stripe pattern for empty / unallocated warehouse slots like in the reference image */
+  .pattern-hatched-stripes {
+    background-color: #f7f6f2;
+    background-image: repeating-linear-gradient(
+      -45deg,
+      transparent,
+      transparent 5px,
+      rgba(180, 175, 160, 0.25) 5px,
+      rgba(180, 175, 160, 0.25) 8px
+    );
+  }
+
+  /* Monospaced tabular numbers for high-density ERP data tables */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom scrollbars for high-density tables */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1ede4;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d4cec2;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #b5ada0;
+}

@@ -1,0 +1,529 @@
+// Enterprise Inventory Management System (IMS) - Prisma Schema
+// Designed for High-Integrity, Multi-Location Stock Tracking, 
+// Directed WES Picking, AI Demand Replenishment & Omni-Channel Routing
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  STAFF
+}
+
+enum LocationType {
+  WAREHOUSE
+  STOREFRONT
+}
+
+enum MovementType {
+  RECEIPT
+  TRANSFER
+  SALE
+  ADJUSTMENT
+  RETURN
+}
+
+enum SyncPlatform {
+  SHOPIFY
+  WOOCOMMERCE
+  AMAZON
+  ODOO_ERP
+  B2B_PORTAL
+}
+
+enum ItemStatus {
+  AVAILABLE
+  RESERVED
+  QUARANTINED
+  EXPIRED
+  SHIPPED
+}
+
+enum WorkOrderStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum OrderStatus {
+  PENDING
+  ROUTED
+  PARTIALLY_FULFILLED
+  FULFILLED
+  CANCELLED
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  APPROVED
+  SENT
+  RECEIVED
+  CANCELLED
+}
+
+enum WaveStatus {
+  QUEUED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// --------------------------------------------------------
+// CORE ENTITIES
+// --------------------------------------------------------
+
+model User {
+  id           String          @id @default(uuid())
+  email        String          @unique
+  name         String
+  passwordHash String
+  role         Role            @default(STAFF)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  movements    StockMovement[]
+  workOrders   WorkOrder[]
+  waves        Wave[]
+  orders       Order[]
+  purchaseOrders PurchaseOrder[]
+
+  @@map("users")
+}
+
+model Product {
+  id             String          @id @default(uuid())
+  sku            String          @unique
+  barcode        String          @unique
+  name           String
+  description    String?
+  category       String          @default("General")
+  unitCost       Decimal         @default(0.00)
+  retailPrice    Decimal         @default(0.00)
+  trackInventory Boolean         @default(true)
+  reorderPoint   Int             @default(15)
+  leadTimeDays   Int             @default(7)
+  unitOfMeasure  String          @default("EA")
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  // Relationships
+  stockLevels    StockLevel[]
+  stockMovements StockMovement[]
+  stockItems     StockItem[]
+  bomParents     BillOfMaterials[] @relation("FinishedGood")
+  bomComponents  BOMItem[]       @relation("RawMaterial")
+  orderItems     OrderItem[]
+  poItems        PurchaseOrderItem[]
+  palletItems    PalletItem[]
+  binStocks      BinStock[]
+
+  @@index([sku])
+  @@index([barcode])
+  @@map("products")
+}
+
+model Location {
+  id           String          @id @default(uuid())
+  name         String
+  code         String          @unique
+  type         LocationType    @default(WAREHOUSE)
+  address      String
+  city         String
+  state        String
+  postalCode   String
+  latitude     Float           @default(0.0)
+  longitude    Float           @default(0.0)
+  active       Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  // Relationships
+  stockLevels      StockLevel[]
+  fromMovements    StockMovement[]   @relation("FromLocation")
+  toMovements      StockMovement[]   @relation("ToLocation")
+  pallets          Pallet[]
+  zones            WarehouseZone[]
+  stockItems       StockItem[]
+  workOrders       WorkOrder[]
+  shipments        Shipment[]
+  purchaseOrders   PurchaseOrder[]
+
+  @@map("locations")
+}
+
+model StockLevel {
+  id         String   @id @default(uuid())
+  productId  String
+  locationId String
+  quantity   Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, locationId], name: "product_location_unique")
+  @@index([productId])
+  @@index([locationId])
+  @@map("stock_levels")
+}
+
+// Immutable Ledger
+model StockMovement {
+  id             String       @id @default(uuid())
+  productId      String
+  fromLocationId String?
+  toLocationId   String?
+  quantity       Int
+  type           MovementType
+  reference      String?      // e.g. External Order ID, PO number, Work Order #
+  notes          String?
+  timestamp      DateTime     @default(now())
+  userId         String?
+
+  product        Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  fromLocation   Location?    @relation("FromLocation", fields: [fromLocationId], references: [id])
+  toLocation     Location?    @relation("ToLocation", fields: [toLocationId], references: [id])
+  user           User?        @relation(fields: [userId], references: [id])
+
+  @@index([productId])
+  @@index([fromLocationId])
+  @@index([toLocationId])
+  @@index([timestamp])
+  @@map("stock_movements")
+}
+
+model ChannelSync {
+  id           String       @id @default(uuid())
+  platform     SyncPlatform
+  externalId   String
+  channelName  String
+  status       String       @default("HEALTHY") // HEALTHY, SYNCING, ERROR
+  lastSyncTime DateTime     @default(now())
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@unique([platform, externalId])
+  @@map("channel_syncs")
+}
+
+// --------------------------------------------------------
+// ENTERPRISE ERP CAPABILITIES: LOT, SERIAL & LPN
+// --------------------------------------------------------
+
+model StockItem {
+  id             String     @id @default(uuid())
+  productId      String
+  locationId     String
+  palletId       String?
+  binId          String?
+  serialNumber   String?    @unique
+  lotNumber      String?
+  expirationDate DateTime?
+  status         ItemStatus @default(AVAILABLE)
+  createdAt      DateTime   @default(now())
+
+  product        Product    @relation(fields: [productId], references: [id], onDelete: Restrict)
+  location       Location   @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  pallet         Pallet?    @relation(fields: [palletId], references: [id])
+  bin            Bin?       @relation(fields: [binId], references: [id])
+
+  @@index([lotNumber])
+  @@index([expirationDate])
+  @@index([status])
+  @@map("stock_items")
+}
+
+// License Plate Number (LPN) for pallet/container bulk moves
+model Pallet {
+  id          String       @id @default(uuid())
+  lpnCode     String       @unique // Barcode/RFID representation e.g. LPN-884920
+  locationId  String
+  binId       String?
+  status      String       @default("STAGED") // STAGED, IN_TRANSIT, RECEIVED, STORED
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  location    Location     @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  bin         Bin?         @relation(fields: [binId], references: [id])
+  items       PalletItem[]
+  stockItems  StockItem[]
+
+  @@index([lpnCode])
+  @@map("pallets")
+}
+
+model PalletItem {
+  id        String  @id @default(uuid())
+  palletId  String
+  productId String
+  quantity  Int
+
+  pallet    Pallet  @relation(fields: [palletId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([palletId, productId])
+  @@map("pallet_items")
+}
+
+// --------------------------------------------------------
+// MANUFACTURING & BILL OF MATERIALS (BOM)
+// --------------------------------------------------------
+
+model BillOfMaterials {
+  id               String      @id @default(uuid())
+  bomCode          String      @unique
+  name             String
+  description      String?
+  finishedGoodId   String
+  finishedQuantity Int         @default(1)
+  laborCostEstimate Decimal    @default(0.00)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  finishedGood     Product     @relation("FinishedGood", fields: [finishedGoodId], references: [id], onDelete: Restrict)
+  items            BOMItem[]
+  workOrders       WorkOrder[]
+
+  @@map("bill_of_materials")
+}
+
+model BOMItem {
+  id                String          @id @default(uuid())
+  bomId             String
+  componentProductId String
+  quantityRequired  Int             @default(1)
+
+  bom               BillOfMaterials @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  componentProduct  Product         @relation("RawMaterial", fields: [componentProductId], references: [id], onDelete: Restrict)
+
+  @@unique([bomId, componentProductId])
+  @@map("bom_items")
+}
+
+model WorkOrder {
+  id                String          @id @default(uuid())
+  workOrderNumber   String          @unique
+  bomId             String
+  locationId        String
+  quantityToProduce Int
+  status            WorkOrderStatus @default(DRAFT)
+  notes             String?
+  createdById       String?
+  createdAt         DateTime        @default(now())
+  completedAt       DateTime?
+
+  bom               BillOfMaterials @relation(fields: [bomId], references: [id])
+  location          Location        @relation(fields: [locationId], references: [id])
+  createdBy         User?           @relation(fields: [createdById], references: [id])
+
+  @@index([status])
+  @@map("work_orders")
+}
+
+// --------------------------------------------------------
+// WAREHOUSE EXECUTION SYSTEM (WES) & DIRECTED PICKING
+// --------------------------------------------------------
+
+model WarehouseZone {
+  id         String   @id @default(uuid())
+  locationId String
+  code       String   // e.g. ZONE-A (Ambient), ZONE-C (Cold Storage)
+  name       String
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  aisles     Aisle[]
+
+  @@unique([locationId, code])
+  @@map("warehouse_zones")
+}
+
+model Aisle {
+  id        String        @id @default(uuid())
+  zoneId    String
+  aisleNumber Int
+  zone      WarehouseZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  racks     Rack[]
+
+  @@unique([zoneId, aisleNumber])
+  @@map("aisles")
+}
+
+model Rack {
+  id         String   @id @default(uuid())
+  aisleId    String
+  rackNumber Int
+  aisle      Aisle    @relation(fields: [aisleId], references: [id], onDelete: Cascade)
+  bins       Bin[]
+
+  @@unique([aisleId, rackNumber])
+  @@map("racks")
+}
+
+model Bin {
+  id         String      @id @default(uuid())
+  rackId     String
+  binCode    String      @unique // e.g. A-01-02-B3
+  shelfLevel Int         @default(1)
+  xCoord     Float       @default(0.0) // For TSP routing
+  yCoord     Float       @default(0.0)
+  zCoord     Float       @default(0.0)
+
+  rack       Rack        @relation(fields: [rackId], references: [id], onDelete: Cascade)
+  binStocks  BinStock[]
+  stockItems StockItem[]
+  pallets    Pallet[]
+
+  @@index([binCode])
+  @@map("bins")
+}
+
+model BinStock {
+  id        String  @id @default(uuid())
+  binId     String
+  productId String
+  quantity  Int     @default(0)
+
+  bin       Bin     @relation(fields: [binId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([binId, productId])
+  @@map("bin_stocks")
+}
+
+model Wave {
+  id         String     @id @default(uuid())
+  waveNumber String     @unique
+  status     WaveStatus @default(QUEUED)
+  assignedTo String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  user       User?      @relation(fields: [assignedTo], references: [id])
+  items      WaveItem[]
+
+  @@map("waves")
+}
+
+model WaveItem {
+  id         String  @id @default(uuid())
+  waveId     String
+  orderId    String
+  productId  String
+  binCode    String
+  quantity   Int
+  pickedQty  Int     @default(0)
+  sequence   Int     // Optimal TSP sequence
+  isComplete Boolean @default(false)
+
+  wave       Wave    @relation(fields: [waveId], references: [id], onDelete: Cascade)
+
+  @@index([waveId, sequence])
+  @@map("wave_items")
+}
+
+// --------------------------------------------------------
+// SMART ORDER ROUTING & FULFILLMENT
+// --------------------------------------------------------
+
+model Order {
+  id              String      @id @default(uuid())
+  externalOrderNo String      @unique
+  platform        SyncPlatform
+  customerName    String
+  customerEmail   String
+  destAddress     String
+  destCity        String
+  destState       String
+  destPostalCode  String
+  destLat         Float       @default(0.0)
+  destLng         Float       @default(0.0)
+  status          OrderStatus @default(PENDING)
+  totalAmount     Decimal     @default(0.00)
+  createdById     String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  createdBy       User?       @relation(fields: [createdById], references: [id])
+  items           OrderItem[]
+  shipments       Shipment[]
+
+  @@index([externalOrderNo])
+  @@index([status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String  @id @default(uuid())
+  orderId   String
+  productId String
+  quantity  Int
+  unitPrice Decimal @default(0.00)
+
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@map("order_items")
+}
+
+model Shipment {
+  id              String   @id @default(uuid())
+  orderId         String
+  locationId      String
+  carrier         String   @default("UPS Ground")
+  trackingNumber  String?
+  estimatedCost   Decimal  @default(0.00)
+  isSplit         Boolean  @default(false)
+  itemSummaryJson String   // JSON array of [{ productId, sku, quantity }]
+  createdAt       DateTime @default(now())
+
+  order           Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  location        Location @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  @@map("shipments")
+}
+
+// --------------------------------------------------------
+// AI DEMAND PLANNING & PROCUREMENT
+// --------------------------------------------------------
+
+model PurchaseOrder {
+  id         String              @id @default(uuid())
+  poNumber   String              @unique
+  supplier   String
+  locationId String
+  status     PurchaseOrderStatus @default(DRAFT)
+  totalCost  Decimal             @default(0.00)
+  isAiAutoGenerated Boolean      @default(false)
+  notes      String?
+  createdById String?
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  location   Location            @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  createdBy  User?               @relation(fields: [createdById], references: [id])
+  items      PurchaseOrderItem[]
+
+  @@index([poNumber])
+  @@index([status])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(uuid())
+  purchaseOrderId String
+  productId       String
+  quantity        Int
+  unitCost        Decimal
+
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product         Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@map("purchase_order_items")
+}

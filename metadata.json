@@ -1,0 +1,6 @@
+{
+  "name": "RedSea IMS",
+  "description": "Enterprise Inventory Management System for NEOM warehouse and stock operations, featuring multi-tier UoM & packaging, blind inbound receiving, automated reconciliation, and quarantine management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
